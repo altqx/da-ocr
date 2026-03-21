@@ -85,7 +85,7 @@ type OcrLine = OcrParagraph['lines'][number];
 type OcrWord = OcrLine['words'][number];
 
 type OcrRunSnapshot = {
-	preset: OcrPresetCode;
+	preset: ResolvedPresetCode;
 	processing: ProcessingSettings;
 	crop: CropSelection | null;
 	source: ImageAsset['source'];
@@ -141,6 +141,7 @@ type PersistedBatchQueue = {
 };
 
 const OCR_PRESETS = [
+	{ code: 'auto', shortLabel: 'AUTO' },
 	{ code: 'eng', shortLabel: 'EN' },
 	{ code: 'deu', shortLabel: 'DE' },
 	{ code: 'jpn', shortLabel: 'JP' },
@@ -151,6 +152,7 @@ const OCR_PRESETS = [
 ] as const;
 
 type OcrPresetCode = (typeof OCR_PRESETS)[number]['code'];
+type ResolvedPresetCode = Exclude<OcrPresetCode, 'auto'>;
 
 const DEFAULT_PRESET: OcrPresetCode = 'eng';
 const DEFAULT_PROCESSING: ProcessingSettings = {
@@ -198,8 +200,23 @@ function formatStatus(status?: string) {
 		.join(' ');
 }
 
+function mapScriptToPreset(script: string): ResolvedPresetCode {
+	switch (script) {
+		case 'Japanese':
+			return 'jpn';
+		case 'Thai':
+			return 'tha';
+		case 'Han':
+			return 'jpn';
+		default:
+			return 'eng';
+	}
+}
+
 function getPresetLabel(preset: OcrPresetCode) {
 	switch (preset) {
+		case 'auto':
+			return m.ocr_preset_auto();
 		case 'deu':
 			return m.ocr_preset_deu();
 		case 'jpn':
@@ -1005,7 +1022,6 @@ export default function OcrStudio() {
 		cropOverride?: CropSelection | null,
 	): Promise<OcrExecutionResult> => {
 		const runId = ++runIdRef.current;
-		const presetLabel = getPresetLabel(presetCode);
 		const cropForRun = cropOverride === undefined ? activeCrop : cropOverride;
 		const runProcessing = { ...processing };
 		const runSignature = getRunSignature(runProcessing, cropForRun);
@@ -1042,10 +1058,41 @@ export default function OcrStudio() {
 			processedUrlRef.current = preparedImage.url;
 			setProcessedPreview(preparedImage);
 			setProgress(0.08);
-			setStatus(m.status_preparing_ocr({ language: presetLabel }));
+
+			let resolvedPreset: ResolvedPresetCode =
+				presetCode === 'auto' ? 'eng' : presetCode;
+
+			if (presetCode === 'auto') {
+				setStatus(m.status_detecting_script());
+				try {
+					const { createWorker: createOsdWorker } = await import('tesseract.js');
+					const osdWorker = await createOsdWorker('osd', 1);
+					try {
+						const detectResult = await osdWorker.detect(preparedImage.blob);
+						resolvedPreset = mapScriptToPreset(
+							(detectResult.data as { script?: string }).script ?? '',
+						);
+					} finally {
+						await osdWorker.terminate();
+					}
+				} catch {
+					resolvedPreset = 'eng';
+				}
+
+				if (runId !== runIdRef.current) {
+					return null;
+				}
+			}
+
+			const presetLabel = getPresetLabel(resolvedPreset);
+			setStatus(
+				presetCode === 'auto'
+					? m.status_script_detected({ language: presetLabel })
+					: m.status_preparing_ocr({ language: presetLabel }),
+			);
 
 			const { createWorker } = await import('tesseract.js');
-			const worker = await createWorker(presetCode, 1, {
+			const worker = await createWorker(resolvedPreset, 1, {
 				logger: (message: { progress?: number; status?: string }) => {
 					if (runId !== runIdRef.current) {
 						return;
@@ -1073,7 +1120,7 @@ export default function OcrStudio() {
 			setConfidence(parsedOutput.confidence);
 			setProgress(1);
 			const snapshot = {
-				preset: presetCode,
+				preset: resolvedPreset,
 				processing: runProcessing,
 				crop: preparedImage.crop,
 				source,
@@ -1100,13 +1147,16 @@ export default function OcrStudio() {
 				return null;
 			}
 
+			const fallbackLabel = getPresetLabel(
+				presetCode === 'auto' ? 'eng' : presetCode,
+			);
 			const message =
 				cause instanceof Error
 					? cause.message
-					: m.status_ocr_failed({ language: presetLabel });
+					: m.status_ocr_failed({ language: fallbackLabel });
 
 			setError(message);
-			setStatus(m.status_ocr_failed({ language: presetLabel }));
+			setStatus(m.status_ocr_failed({ language: fallbackLabel }));
 			return {
 				ok: false,
 				error: message,
@@ -1191,9 +1241,42 @@ export default function OcrStudio() {
 				cancelled: false,
 			};
 			batchRunRef.current = batchRun;
-			const batchPreset = ocrPreset;
+			let batchPreset: ResolvedPresetCode =
+				ocrPreset === 'auto' ? 'eng' : ocrPreset;
 			const batchProcessing = { ...processing };
 			const batchCrop = activeCrop;
+
+			if (ocrPreset === 'auto') {
+				setStatus(m.status_detecting_script());
+				try {
+					const { createWorker: createOsdWorker } = await import('tesseract.js');
+					const firstPrepared = await createProcessedImage(
+						jobs[0].file,
+						batchProcessing,
+						batchCrop,
+					);
+					try {
+						const osdWorker = await createOsdWorker('osd', 1);
+						try {
+							const detectResult = await osdWorker.detect(firstPrepared.blob);
+							batchPreset = mapScriptToPreset(
+								(detectResult.data as { script?: string }).script ?? '',
+							);
+						} finally {
+							await osdWorker.terminate();
+						}
+					} finally {
+						URL.revokeObjectURL(firstPrepared.url);
+					}
+				} catch {
+					batchPreset = 'eng';
+				}
+
+				if (batchRunRef.current !== batchRun || batchRun.cancelled) {
+					return;
+				}
+			}
+
 			const batchWorkerCount = getBatchWorkerCount(jobs.length);
 			const { createScheduler, createWorker } = await import('tesseract.js');
 			const scheduler = createScheduler();
