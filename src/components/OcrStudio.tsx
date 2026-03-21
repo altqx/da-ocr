@@ -1534,6 +1534,39 @@ export default function OcrStudio() {
 		};
 	}, [asset, processedPreview]);
 
+	const rawWheelCleanupRef = useRef<(() => void) | null>(null);
+	const rawPreviewWheelRef = useCallback(
+		(node: HTMLDivElement | null) => {
+			rawWheelCleanupRef.current?.();
+			rawWheelCleanupRef.current = null;
+			rawPreviewSurfaceRef.current = node;
+			if (node) {
+				const handler = (e: WheelEvent) => handlePreviewWheel('raw', e);
+				node.addEventListener('wheel', handler, { passive: false });
+				rawWheelCleanupRef.current = () =>
+					node.removeEventListener('wheel', handler);
+			}
+		},
+		[],
+	);
+
+	const processedWheelCleanupRef = useRef<(() => void) | null>(null);
+	const processedPreviewWheelRef = useCallback(
+		(node: HTMLDivElement | null) => {
+			processedWheelCleanupRef.current?.();
+			processedWheelCleanupRef.current = null;
+			processedPreviewSurfaceRef.current = node;
+			if (node) {
+				const handler = (e: WheelEvent) =>
+					handlePreviewWheel('processed', e);
+				node.addEventListener('wheel', handler, { passive: false });
+				processedWheelCleanupRef.current = () =>
+					node.removeEventListener('wheel', handler);
+			}
+		},
+		[],
+	);
+
 	useEffect(() => {
 		if (!asset || !sourceFileRef.current) {
 			if (processedUrlRef.current) {
@@ -1864,19 +1897,18 @@ export default function OcrStudio() {
 		setProcessing(DEFAULT_PROCESSING);
 	};
 
-	const handlePreviewWheel = (
-		surface: PreviewSurfaceKey,
-		event: React.WheelEvent<HTMLDivElement>,
-	) => {
-		event.preventDefault();
+	const handlePreviewWheel = useEffectEvent(
+		(surface: PreviewSurfaceKey, event: WheelEvent) => {
+			event.preventDefault();
 
-		const direction =
-			event.deltaY < 0 ? PREVIEW_SCALE_STEP : -PREVIEW_SCALE_STEP;
-		setPreviewTransformForSurface(surface, (current) => ({
-			...current,
-			scale: current.scale + direction,
-		}));
-	};
+			const direction =
+				event.deltaY < 0 ? PREVIEW_SCALE_STEP : -PREVIEW_SCALE_STEP;
+			setPreviewTransformForSurface(surface, (current) => ({
+				...current,
+				scale: current.scale + direction,
+			}));
+		},
+	);
 
 	const handlePreviewZoom = (surface: PreviewSurfaceKey, direction: 1 | -1) => {
 		setPreviewTransformForSurface(surface, (current) => ({
@@ -2351,6 +2383,324 @@ export default function OcrStudio() {
 					</button>
 				</div>
 
+				<input
+					ref={fileInputRef}
+					type="file"
+					multiple
+					accept="image/*"
+					className="hidden"
+					onChange={(event) => {
+						void handleImageFiles(event.target.files, 'picker');
+					}}
+				/>
+
+				<section
+					className={`ocr-dropzone ${isDragging ? 'is-dragging' : ''} ${asset ? 'has-image' : ''}`}
+					aria-label={m.dropzone_aria()}
+					onDragEnter={(event) => {
+						event.preventDefault();
+						setIsDragging(true);
+					}}
+					onDragOver={(event) => {
+						event.preventDefault();
+						setIsDragging(true);
+					}}
+					onDragLeave={(event) => {
+						event.preventDefault();
+						setIsDragging(false);
+					}}
+					onDrop={(event) => {
+						event.preventDefault();
+						setIsDragging(false);
+						void handleImageFiles(event.dataTransfer.files, 'drop');
+					}}
+				>
+					{asset ? (
+						<>
+							<div className="preview-meta">
+								<span>{activePreset.shortLabel}</span>
+								<span>{currentSourceLabel}</span>
+								<span>{formatBytes(asset.size)}</span>
+								<span>{asset.type.replace('image/', '')}</span>
+							</div>
+							<div className="preview-grid">
+								<section className="preview-card">
+									<div className="preview-card-head">
+										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+											{m.raw_preview_title()}
+										</h3>
+										<button
+											type="button"
+											onClick={() => fileInputRef.current?.click()}
+											className="action-pill ghost-pill compact-pill"
+											disabled={isBusy}
+										>
+											{m.replace_image()}
+										</button>
+									</div>
+									<div className="preview-toolbar">
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('raw', -1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={rawPreviewTransform.scale <= MIN_PREVIEW_SCALE}
+										>
+											<SearchX size={16} />
+											{m.preview_zoom_out()}
+										</button>
+										<button
+											type="button"
+											onClick={() => resetPreviewTransform('raw')}
+											className="action-pill ghost-pill compact-pill"
+											disabled={rawPreviewTransform.scale === 1}
+										>
+											{m.preview_zoom_reset()}
+										</button>
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('raw', 1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={rawPreviewTransform.scale >= MAX_PREVIEW_SCALE}
+										>
+											<Search size={16} />
+											{m.preview_zoom_in()}
+										</button>
+										<button
+											type="button"
+											onClick={() => {
+												setIsPanMode((current) => !current);
+											}}
+											className={`action-pill ghost-pill compact-pill ${isPanMode ? 'is-active' : ''}`}
+										>
+											<Move size={16} />
+											{isPanMode ? m.preview_pan_off() : m.preview_pan_on()}
+										</button>
+										<span className="preview-zoom-level">
+											{m.preview_zoom_level({ scale: rawZoom })}
+										</span>
+									</div>
+									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
+									<div className="preview-stage is-split">
+										<div
+											ref={rawPreviewWheelRef}
+											className={`preview-surface ${cropEnabled ? 'is-crop-enabled' : ''} ${rawPreviewTransform.scale > 1 ? 'is-pannable' : ''} ${isPanMode ? 'is-pan-mode' : ''}`}
+											onPointerDown={handleRawPreviewPointerDown}
+											onPointerMove={handleCropPointerMove}
+											onPointerUp={finishCropDrag}
+											onPointerCancel={finishCropDrag}
+										>
+											<div
+												className="preview-canvas"
+												style={rawPreviewTransformStyle}
+											>
+												<img
+													src={asset.url}
+													alt={asset.name}
+													className="ocr-preview"
+													draggable={false}
+												/>
+												{cropEnabled && cropBoxStyle ? (
+													<div
+														className={`crop-layer ${isPanMode ? 'is-pan-mode' : ''}`}
+														aria-hidden="true"
+													>
+														<div
+															className={`crop-box ${isCropping ? 'is-drawing' : ''} ${isMovingCrop ? 'is-moving' : ''}`}
+															style={cropBoxStyle}
+															onPointerDown={handleCropMovePointerDown}
+														>
+															<span className="crop-box-label">
+																{m.crop_label()}
+															</span>
+															{cropHandles.map((handle) => (
+																<button
+																	key={handle}
+																	type="button"
+																	onPointerDown={(event) => {
+																		handleCropHandlePointerDown(handle, event);
+																	}}
+																	className={`crop-handle is-${handle}`}
+																	aria-label={m.crop_resize_handle({
+																		handle,
+																	})}
+																	disabled={isBusy}
+																/>
+															))}
+														</div>
+													</div>
+												) : null}
+											</div>
+										</div>
+									</div>
+								</section>
+
+								<section className="preview-card">
+									<div className="preview-card-head">
+										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+											{m.processed_preview_title()}
+										</h3>
+										<span className="preview-status-pill">{previewStatus}</span>
+									</div>
+									<div className="preview-toolbar">
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('processed', -1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={
+												processedPreviewTransform.scale <= MIN_PREVIEW_SCALE
+											}
+										>
+											<SearchX size={16} />
+											{m.preview_zoom_out()}
+										</button>
+										<button
+											type="button"
+											onClick={() => resetPreviewTransform('processed')}
+											className="action-pill ghost-pill compact-pill"
+											disabled={processedPreviewTransform.scale === 1}
+										>
+											{m.preview_zoom_reset()}
+										</button>
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('processed', 1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={
+												processedPreviewTransform.scale >= MAX_PREVIEW_SCALE
+											}
+										>
+											<Search size={16} />
+											{m.preview_zoom_in()}
+										</button>
+										<span className="preview-zoom-level">
+											{m.preview_zoom_level({ scale: processedZoom })}
+										</span>
+									</div>
+									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
+									<div className="preview-stage is-split">
+										<div
+											ref={processedPreviewWheelRef}
+											className={`preview-surface ${processedPreviewTransform.scale > 1 ? 'is-pannable' : ''}`}
+											onPointerDown={handleProcessedPreviewPointerDown}
+										>
+											{processedPreview ? (
+												<div
+													className="preview-canvas"
+													style={processedPreviewTransformStyle}
+												>
+													<img
+														src={processedPreview.url}
+														alt={m.processed_preview_alt()}
+														className="ocr-preview"
+														draggable={false}
+													/>
+													{overlayPreview && processedLayout ? (
+														<div className="overlay-layer" aria-hidden="true">
+															{detectedWords.map((word, index) => {
+																const left =
+																	processedLayout.left +
+																	(word.bbox.x0 / overlayPreview.width) *
+																		processedLayout.width;
+																const top =
+																	processedLayout.top +
+																	(word.bbox.y0 / overlayPreview.height) *
+																		processedLayout.height;
+																const width =
+																	((word.bbox.x1 - word.bbox.x0) /
+																		overlayPreview.width) *
+																	processedLayout.width;
+																const height =
+																	((word.bbox.y1 - word.bbox.y0) /
+																		overlayPreview.height) *
+																	processedLayout.height;
+
+																return (
+																	<div
+																		key={getWordKey(word)}
+																		className={`word-box ${selectedWordIndex === index ? 'is-selected' : ''}`}
+																		style={{ left, top, width, height }}
+																	/>
+																);
+															})}
+														</div>
+													) : null}
+												</div>
+											) : (
+												<div className="preview-loading">
+													{m.processed_preview_loading()}
+												</div>
+											)}
+										</div>
+									</div>
+								</section>
+							</div>
+							<div className="preview-footer">
+								<strong>{asset.name}</strong>
+								<span>{previewStatus}</span>
+							</div>
+						</>
+					) : (
+						<div className="dropzone-empty">
+							<div className="dropzone-icon">
+								<ClipboardPaste size={24} />
+							</div>
+							<p className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.dropzone_title()}
+							</p>
+							<button
+								type="button"
+								onClick={() => fileInputRef.current?.click()}
+								className="action-pill"
+								disabled={isBusy}
+							>
+								<ImagePlus size={16} />
+								{m.select_image()}
+							</button>
+						</div>
+					)}
+				</section>
+
+				<div className="meter-wrap">
+					<div className="meter-copy">
+						<span>{status}</span>
+						<span>{meterProgress}%</span>
+					</div>
+					<div className="meter-track" aria-hidden="true">
+						<div
+							className="meter-fill"
+							style={{ width: `${meterProgress}%` }}
+						/>
+					</div>
+				</div>
+			</div>
+
+			<div className="ocr-panel">
+				<div className="panel-head">
+					<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+						{m.output_title()}
+					</h2>
+					<div className="flex flex-wrap gap-2">
+						<button
+							type="button"
+							onClick={handleCopy}
+							disabled={!ocrText}
+							className="action-pill"
+						>
+							{copied ? <Check size={18} /> : <Copy size={18} />}
+							{copied ? m.copied_text() : m.copy_text()}
+						</button>
+						<button
+							type="button"
+							onClick={() => void handleReset()}
+							className="action-pill ghost-pill"
+							disabled={isBusy}
+						>
+							<RotateCcw size={18} />
+							{m.reset()}
+						</button>
+					</div>
+				</div>
+
 				<div ref={ocrLangRef} className="ocr-lang-select">
 					<button
 						type="button"
@@ -2606,300 +2956,6 @@ export default function OcrStudio() {
 					</section>
 				</div>
 
-				<input
-					ref={fileInputRef}
-					type="file"
-					multiple
-					accept="image/*"
-					className="hidden"
-					onChange={(event) => {
-						void handleImageFiles(event.target.files, 'picker');
-					}}
-				/>
-
-				<section
-					className={`ocr-dropzone ${isDragging ? 'is-dragging' : ''} ${asset ? 'has-image' : ''}`}
-					aria-label={m.dropzone_aria()}
-					onDragEnter={(event) => {
-						event.preventDefault();
-						setIsDragging(true);
-					}}
-					onDragOver={(event) => {
-						event.preventDefault();
-						setIsDragging(true);
-					}}
-					onDragLeave={(event) => {
-						event.preventDefault();
-						setIsDragging(false);
-					}}
-					onDrop={(event) => {
-						event.preventDefault();
-						setIsDragging(false);
-						void handleImageFiles(event.dataTransfer.files, 'drop');
-					}}
-				>
-					{asset ? (
-						<>
-							<div className="preview-meta">
-								<span>{activePreset.shortLabel}</span>
-								<span>{currentSourceLabel}</span>
-								<span>{formatBytes(asset.size)}</span>
-								<span>{asset.type.replace('image/', '')}</span>
-							</div>
-							<div className="preview-grid">
-								<section className="preview-card">
-									<div className="preview-card-head">
-										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-											{m.raw_preview_title()}
-										</h3>
-										<button
-											type="button"
-											onClick={() => fileInputRef.current?.click()}
-											className="action-pill ghost-pill compact-pill"
-											disabled={isBusy}
-										>
-											{m.replace_image()}
-										</button>
-									</div>
-									<div className="preview-toolbar">
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('raw', -1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={rawPreviewTransform.scale <= MIN_PREVIEW_SCALE}
-										>
-											<SearchX size={16} />
-											{m.preview_zoom_out()}
-										</button>
-										<button
-											type="button"
-											onClick={() => resetPreviewTransform('raw')}
-											className="action-pill ghost-pill compact-pill"
-											disabled={rawPreviewTransform.scale === 1}
-										>
-											{m.preview_zoom_reset()}
-										</button>
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('raw', 1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={rawPreviewTransform.scale >= MAX_PREVIEW_SCALE}
-										>
-											<Search size={16} />
-											{m.preview_zoom_in()}
-										</button>
-										<button
-											type="button"
-											onClick={() => {
-												setIsPanMode((current) => !current);
-											}}
-											className={`action-pill ghost-pill compact-pill ${isPanMode ? 'is-active' : ''}`}
-										>
-											<Move size={16} />
-											{isPanMode ? m.preview_pan_off() : m.preview_pan_on()}
-										</button>
-										<span className="preview-zoom-level">
-											{m.preview_zoom_level({ scale: rawZoom })}
-										</span>
-									</div>
-									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
-									<div className="preview-stage is-split">
-										<div
-											ref={rawPreviewSurfaceRef}
-											className={`preview-surface ${cropEnabled ? 'is-crop-enabled' : ''} ${rawPreviewTransform.scale > 1 ? 'is-pannable' : ''} ${isPanMode ? 'is-pan-mode' : ''}`}
-											onPointerDown={handleRawPreviewPointerDown}
-											onPointerMove={handleCropPointerMove}
-											onPointerUp={finishCropDrag}
-											onPointerCancel={finishCropDrag}
-											onWheel={(event) => {
-												handlePreviewWheel('raw', event);
-											}}
-										>
-											<div
-												className="preview-canvas"
-												style={rawPreviewTransformStyle}
-											>
-												<img
-													src={asset.url}
-													alt={asset.name}
-													className="ocr-preview"
-												/>
-												{cropEnabled && cropBoxStyle ? (
-													<div
-														className={`crop-layer ${isPanMode ? 'is-pan-mode' : ''}`}
-														aria-hidden="true"
-													>
-														<div
-															className={`crop-box ${isCropping ? 'is-drawing' : ''} ${isMovingCrop ? 'is-moving' : ''}`}
-															style={cropBoxStyle}
-															onPointerDown={handleCropMovePointerDown}
-														>
-															<span className="crop-box-label">
-																{m.crop_label()}
-															</span>
-															{cropHandles.map((handle) => (
-																<button
-																	key={handle}
-																	type="button"
-																	onPointerDown={(event) => {
-																		handleCropHandlePointerDown(handle, event);
-																	}}
-																	className={`crop-handle is-${handle}`}
-																	aria-label={m.crop_resize_handle({
-																		handle,
-																	})}
-																	disabled={isBusy}
-																/>
-															))}
-														</div>
-													</div>
-												) : null}
-											</div>
-										</div>
-									</div>
-								</section>
-
-								<section className="preview-card">
-									<div className="preview-card-head">
-										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-											{m.processed_preview_title()}
-										</h3>
-										<span className="preview-status-pill">{previewStatus}</span>
-									</div>
-									<div className="preview-toolbar">
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('processed', -1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={
-												processedPreviewTransform.scale <= MIN_PREVIEW_SCALE
-											}
-										>
-											<SearchX size={16} />
-											{m.preview_zoom_out()}
-										</button>
-										<button
-											type="button"
-											onClick={() => resetPreviewTransform('processed')}
-											className="action-pill ghost-pill compact-pill"
-											disabled={processedPreviewTransform.scale === 1}
-										>
-											{m.preview_zoom_reset()}
-										</button>
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('processed', 1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={
-												processedPreviewTransform.scale >= MAX_PREVIEW_SCALE
-											}
-										>
-											<Search size={16} />
-											{m.preview_zoom_in()}
-										</button>
-										<span className="preview-zoom-level">
-											{m.preview_zoom_level({ scale: processedZoom })}
-										</span>
-									</div>
-									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
-									<div className="preview-stage is-split">
-										<div
-											ref={processedPreviewSurfaceRef}
-											className={`preview-surface ${processedPreviewTransform.scale > 1 ? 'is-pannable' : ''}`}
-											onPointerDown={handleProcessedPreviewPointerDown}
-											onWheel={(event) => {
-												handlePreviewWheel('processed', event);
-											}}
-										>
-											{processedPreview ? (
-												<div
-													className="preview-canvas"
-													style={processedPreviewTransformStyle}
-												>
-													<img
-														src={processedPreview.url}
-														alt={m.processed_preview_alt()}
-														className="ocr-preview"
-													/>
-													{overlayPreview && processedLayout ? (
-														<div className="overlay-layer" aria-hidden="true">
-															{detectedWords.map((word, index) => {
-																const left =
-																	processedLayout.left +
-																	(word.bbox.x0 / overlayPreview.width) *
-																		processedLayout.width;
-																const top =
-																	processedLayout.top +
-																	(word.bbox.y0 / overlayPreview.height) *
-																		processedLayout.height;
-																const width =
-																	((word.bbox.x1 - word.bbox.x0) /
-																		overlayPreview.width) *
-																	processedLayout.width;
-																const height =
-																	((word.bbox.y1 - word.bbox.y0) /
-																		overlayPreview.height) *
-																	processedLayout.height;
-
-																return (
-																	<div
-																		key={getWordKey(word)}
-																		className={`word-box ${selectedWordIndex === index ? 'is-selected' : ''}`}
-																		style={{ left, top, width, height }}
-																	/>
-																);
-															})}
-														</div>
-													) : null}
-												</div>
-											) : (
-												<div className="preview-loading">
-													{m.processed_preview_loading()}
-												</div>
-											)}
-										</div>
-									</div>
-								</section>
-							</div>
-							<div className="preview-footer">
-								<strong>{asset.name}</strong>
-								<span>{previewStatus}</span>
-							</div>
-						</>
-					) : (
-						<div className="dropzone-empty">
-							<div className="dropzone-icon">
-								<ClipboardPaste size={24} />
-							</div>
-							<p className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.dropzone_title()}
-							</p>
-							<button
-								type="button"
-								onClick={() => fileInputRef.current?.click()}
-								className="action-pill"
-								disabled={isBusy}
-							>
-								<ImagePlus size={16} />
-								{m.select_image()}
-							</button>
-						</div>
-					)}
-				</section>
-
-				<div className="meter-wrap">
-					<div className="meter-copy">
-						<span>{status}</span>
-						<span>{meterProgress}%</span>
-					</div>
-					<div className="meter-track" aria-hidden="true">
-						<div
-							className="meter-fill"
-							style={{ width: `${meterProgress}%` }}
-						/>
-					</div>
-				</div>
-
 				{error ? <p className="status-error">{error}</p> : null}
 
 				<div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -2949,34 +3005,6 @@ export default function OcrStudio() {
 						</div>
 					</section>
 				) : null}
-			</div>
-
-			<div className="ocr-panel">
-				<div className="panel-head">
-					<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-						{m.output_title()}
-					</h2>
-					<div className="flex flex-wrap gap-2">
-						<button
-							type="button"
-							onClick={handleCopy}
-							disabled={!ocrText}
-							className="action-pill"
-						>
-							{copied ? <Check size={18} /> : <Copy size={18} />}
-							{copied ? m.copied_text() : m.copy_text()}
-						</button>
-						<button
-							type="button"
-							onClick={() => void handleReset()}
-							className="action-pill ghost-pill"
-							disabled={isBusy}
-						>
-							<RotateCcw size={18} />
-							{m.reset()}
-						</button>
-					</div>
-				</div>
 
 				<div className={`ocr-output ${!ocrText ? 'is-empty' : ''}`}>
 					{isRunning ? (

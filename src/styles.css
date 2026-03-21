@@ -450,7 +450,7 @@ pre code {
 }
 
 .preview-stage.is-split {
-  height: clamp(14rem, 35vw, 20rem);
+  height: clamp(14rem, 30vh, 22rem);
   padding: 0;
 }
 
@@ -518,7 +518,7 @@ pre code {
   display: grid;
   gap: 0;
   padding: 2.5rem 0 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .preview-card {
@@ -860,6 +860,8 @@ pre code {
    ═══════════════════════════════════════════ */
 .ocr-output {
   min-height: 14rem;
+  max-height: 24rem;
+  overflow-y: auto;
   border: none;
   background: transparent;
   padding: 1rem;
