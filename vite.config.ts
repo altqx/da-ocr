@@ -6,19 +6,18 @@ import viteReact from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 const config = defineConfig({
-	plugins: [
-		devtools(),
-		paraglideVitePlugin({
-			project: './project.inlang',
-			outdir: './src/paraglide',
-			strategy: ['url', 'baseLocale'],
-		}),
-		tsconfigPaths({ projects: ['./tsconfig.json'] }),
-		tailwindcss(),
-		tanstackStart(),
-		viteReact(),
-	],
+	plugins: [devtools(), paraglideVitePlugin({
+        project: './project.inlang',
+        outdir: './src/paraglide',
+        strategy: ['url', 'baseLocale'],
+    }), tsconfigPaths({ projects: ['./tsconfig.json'] }), tailwindcss(), tanstackStart(), viteReact(), cloudflare({
+        viteEnvironment: {
+            name: "ssr"
+        }
+    })],
 });
 
 export default config;

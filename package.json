@@ -8,13 +8,16 @@
   "scripts": {
     "dev": "vite dev --port 3000",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "bun run build && wrangler dev",
     "test": "vitest run",
     "format": "biome format",
     "lint": "biome lint",
-    "check": "biome check"
+    "check": "biome check",
+    "deploy": "bun run build && wrangler deploy",
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
+    "@cloudflare/vite-plugin": "^1.30.0",
     "@t3-oss/env-core": "^0.13.10",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-devtools": "latest",
@@ -30,6 +33,7 @@
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18",
     "tesseract.js": "^7.0.0",
+    "wrangler": "^4.76.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
