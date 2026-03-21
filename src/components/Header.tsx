@@ -1,4 +1,6 @@
 import { Link } from '@tanstack/react-router';
+import { Github } from 'lucide-react';
+import { m } from '../i18n';
 import ParaglideLocaleSwitcher from './LocaleSwitcher.tsx';
 import ThemeToggle from './ThemeToggle';
 
@@ -25,6 +27,15 @@ export default function Header() {
 					<div className="border-l-3 border-[var(--border)]">
 						<ThemeToggle />
 					</div>
+					<a
+						href="https://github.com/altqx/da-ocr"
+						target="_blank"
+						rel="noopener noreferrer"
+						aria-label={m.sr_go_github()}
+						className="border-l-3 border-[var(--border)] flex items-center px-3 py-2.5 text-[var(--ink-soft)] hover:text-[var(--ink)] transition-colors"
+					>
+						<Github size={16} />
+					</a>
 				</div>
 			</nav>
 		</header>
