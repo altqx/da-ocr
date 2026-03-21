@@ -11,7 +11,9 @@ export default function Header() {
 						to="/"
 						className="text-[var(--ink)] no-underline uppercase tracking-widest"
 					>
-						<span className="bg-[var(--accent-strong)] text-[var(--accent)] px-1.5 py-0.5 mr-1">DA</span>
+						<span className="bg-[var(--accent-strong)] text-[var(--accent)] px-1.5 py-0.5 mr-1">
+							DA
+						</span>
 						OCR
 					</Link>
 				</h2>

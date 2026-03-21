@@ -29,7 +29,18 @@ export default function ParaglideLocaleSwitcher() {
 				onClick={() => setOpen((v) => !v)}
 			>
 				{currentLocale.toUpperCase()}
-				<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`locale-arrow${open ? ' open' : ''}`}>
+				<svg
+					width="10"
+					height="10"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					strokeWidth="3"
+					strokeLinecap="round"
+					strokeLinejoin="round"
+					aria-hidden="true"
+					className={`locale-arrow${open ? ' open' : ''}`}
+				>
 					<polyline points="6 9 12 15 18 9" />
 				</svg>
 			</button>

@@ -2335,812 +2335,831 @@ export default function OcrStudio() {
 
 	return (
 		<main className="ocr-workspace">
+			<div className="ocr-panel">
+				<div className="panel-head">
+					<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+						{m.ocr_input_title()}
+					</h2>
+					<button
+						type="button"
+						onClick={() => fileInputRef.current?.click()}
+						className="action-pill compact-pill"
+						disabled={isBusy}
+					>
+						<ImagePlus size={16} />
+						{m.select_image()}
+					</button>
+				</div>
 
-
-				<div className="ocr-panel">
-					<div className="panel-head">
-						<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-							{m.ocr_input_title()}
-						</h2>
-						<button
-							type="button"
-							onClick={() => fileInputRef.current?.click()}
-							className="action-pill compact-pill"
-							disabled={isBusy}
+				<div ref={ocrLangRef} className="ocr-lang-select">
+					<button
+						type="button"
+						className={`toolbar-btn locale-btn ocr-lang-btn${ocrLangOpen ? ' is-active' : ''}`}
+						aria-haspopup="listbox"
+						aria-expanded={ocrLangOpen}
+						disabled={isBusy}
+						onClick={() => setOcrLangOpen((v) => !v)}
+					>
+						<span className="ocr-lang-short">
+							{OCR_PRESETS.find((p) => p.code === ocrPreset)?.shortLabel}
+						</span>
+						<span className="ocr-lang-label">{getPresetLabel(ocrPreset)}</span>
+						<svg
+							width="10"
+							height="10"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="3"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							aria-hidden="true"
+							className={`locale-arrow${ocrLangOpen ? ' open' : ''}`}
 						>
-							<ImagePlus size={16} />
-							{m.select_image()}
-						</button>
-					</div>
-
-					<div ref={ocrLangRef} className="ocr-lang-select">
-						<button
-							type="button"
-							className={`toolbar-btn locale-btn ocr-lang-btn${ocrLangOpen ? ' is-active' : ''}`}
-							aria-haspopup="listbox"
-							aria-expanded={ocrLangOpen}
-							disabled={isBusy}
-							onClick={() => setOcrLangOpen((v) => !v)}
+							<polyline points="6 9 12 15 18 9" />
+						</svg>
+					</button>
+					{ocrLangOpen && (
+						<ul
+							className="locale-menu ocr-lang-menu"
+							aria-label={m.ocr_language_legend()}
 						>
-							<span className="ocr-lang-short">{OCR_PRESETS.find((p) => p.code === ocrPreset)?.shortLabel}</span>
-							<span className="ocr-lang-label">{getPresetLabel(ocrPreset)}</span>
-							<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`locale-arrow${ocrLangOpen ? ' open' : ''}`}>
-								<polyline points="6 9 12 15 18 9" />
-							</svg>
-						</button>
-						{ocrLangOpen && (
-							<ul className="locale-menu ocr-lang-menu" aria-label={m.ocr_language_legend()}>
-								{OCR_PRESETS.map((preset) => (
-									<li key={preset.code}>
+							{OCR_PRESETS.map((preset) => (
+								<li key={preset.code}>
+									<button
+										type="button"
+										className={`locale-option ocr-lang-option${ocrPreset === preset.code ? ' is-active' : ''}`}
+										aria-current={
+											ocrPreset === preset.code ? 'true' : undefined
+										}
+										onClick={() => {
+											void handlePresetChange(preset.code);
+											setOcrLangOpen(false);
+										}}
+									>
+										<span className="ocr-lang-short">{preset.shortLabel}</span>
+										{getPresetLabel(preset.code)}
+									</button>
+								</li>
+							))}
+						</ul>
+					)}
+				</div>
+
+				<div className="control-grid">
+					<section className="control-card">
+						<div className="control-head">
+							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.preprocess_title()}
+							</h3>
+							<SlidersHorizontal size={16} />
+						</div>
+
+						<label className="switch-row">
+							<input
+								type="checkbox"
+								checked={processing.grayscale}
+								onChange={(event) => {
+									handleProcessingChange('grayscale', event.target.checked);
+								}}
+							/>
+							<span>{m.preprocess_grayscale()}</span>
+						</label>
+
+						<label className="switch-row">
+							<input
+								type="checkbox"
+								checked={processing.thresholdEnabled}
+								onChange={(event) => {
+									handleProcessingChange(
+										'thresholdEnabled',
+										event.target.checked,
+									);
+								}}
+							/>
+							<span>{m.preprocess_threshold()}</span>
+						</label>
+
+						<label className="control-field">
+							<div className="control-label-row">
+								<span>{m.preprocess_threshold()}</span>
+								<strong>{processing.threshold}</strong>
+							</div>
+							<input
+								className="range-input"
+								type="range"
+								min="0"
+								max="255"
+								value={processing.threshold}
+								disabled={!processing.thresholdEnabled}
+								onChange={(event) => {
+									handleProcessingChange(
+										'threshold',
+										Number(event.target.value),
+									);
+								}}
+							/>
+						</label>
+
+						<label className="control-field">
+							<div className="control-label-row">
+								<span>{m.preprocess_contrast()}</span>
+								<strong>{contrastLabel}</strong>
+							</div>
+							<input
+								className="range-input"
+								type="range"
+								min="-100"
+								max="100"
+								value={processing.contrast}
+								onChange={(event) => {
+									handleProcessingChange(
+										'contrast',
+										Number(event.target.value),
+									);
+								}}
+							/>
+						</label>
+
+						<p className="control-copy muted-copy">
+							{m.preprocess_threshold_hint()}
+						</p>
+
+						<div className="control-actions">
+							<button
+								type="button"
+								onClick={() => {
+									void handleApplyProcessing();
+								}}
+								className="action-pill compact-pill"
+								disabled={!sourceFileRef.current || isBusy}
+							>
+								{m.preprocess_apply()}
+							</button>
+							<button
+								type="button"
+								onClick={handleResetProcessing}
+								className="action-pill ghost-pill compact-pill"
+								disabled={isBusy}
+							>
+								{m.preprocess_reset()}
+							</button>
+						</div>
+					</section>
+
+					<section className="control-card">
+						<div className="control-head">
+							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.crop_title()}
+							</h3>
+							<Crop size={16} />
+						</div>
+
+						<label className="switch-row">
+							<input
+								type="checkbox"
+								checked={cropEnabled}
+								onChange={(event) => {
+									setCropEnabled(event.target.checked);
+									if (!event.target.checked) {
+										setCropSelection(null);
+									}
+								}}
+								disabled={isBusy}
+							/>
+							<span>{m.crop_enable()}</span>
+						</label>
+
+						<p className="control-copy muted-copy">{m.crop_hint()}</p>
+
+						{cropPixels ? (
+							<div className="selection-card is-stacked">
+								<strong>{m.crop_selection_active()}</strong>
+								<span>
+									{m.crop_selection_size({
+										width: cropPixels.width,
+										height: cropPixels.height,
+									})}
+								</span>
+								<span>
+									{m.crop_selection_origin({
+										x: cropPixels.x,
+										y: cropPixels.y,
+									})}
+								</span>
+							</div>
+						) : (
+							<p className="control-copy muted-copy">{m.crop_empty()}</p>
+						)}
+
+						<div className="control-actions">
+							<button
+								type="button"
+								onClick={() => {
+									void handleApplyProcessing();
+								}}
+								className="action-pill compact-pill"
+								disabled={!sourceFileRef.current || !cropPixels || isBusy}
+							>
+								{m.crop_apply()}
+							</button>
+							<button
+								type="button"
+								onClick={() => {
+									setCropSelection(null);
+									setCropEnabled(false);
+								}}
+								className="action-pill ghost-pill compact-pill"
+								disabled={!cropSelection || isBusy}
+							>
+								{m.crop_clear()}
+							</button>
+						</div>
+					</section>
+
+					<section className="control-card">
+						<div className="control-head">
+							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.overlay_title()}
+							</h3>
+							<button
+								type="button"
+								onClick={() => {
+									setShowBoxes((current) => !current);
+								}}
+								className="action-pill ghost-pill compact-pill"
+								disabled={!detectedWords.length}
+							>
+								{showBoxes ? <EyeOff size={16} /> : <Eye size={16} />}
+								{overlayActionLabel}
+							</button>
+						</div>
+
+						{selectedWord ? (
+							<div className="selection-card">
+								<strong>{selectedWord.text}</strong>
+								<span>{Math.round(selectedWord.confidence)}%</span>
+							</div>
+						) : (
+							<p className="control-copy muted-copy">{m.overlay_empty()}</p>
+						)}
+					</section>
+				</div>
+
+				<input
+					ref={fileInputRef}
+					type="file"
+					multiple
+					accept="image/*"
+					className="hidden"
+					onChange={(event) => {
+						void handleImageFiles(event.target.files, 'picker');
+					}}
+				/>
+
+				<section
+					className={`ocr-dropzone ${isDragging ? 'is-dragging' : ''} ${asset ? 'has-image' : ''}`}
+					aria-label={m.dropzone_aria()}
+					onDragEnter={(event) => {
+						event.preventDefault();
+						setIsDragging(true);
+					}}
+					onDragOver={(event) => {
+						event.preventDefault();
+						setIsDragging(true);
+					}}
+					onDragLeave={(event) => {
+						event.preventDefault();
+						setIsDragging(false);
+					}}
+					onDrop={(event) => {
+						event.preventDefault();
+						setIsDragging(false);
+						void handleImageFiles(event.dataTransfer.files, 'drop');
+					}}
+				>
+					{asset ? (
+						<>
+							<div className="preview-meta">
+								<span>{activePreset.shortLabel}</span>
+								<span>{currentSourceLabel}</span>
+								<span>{formatBytes(asset.size)}</span>
+								<span>{asset.type.replace('image/', '')}</span>
+							</div>
+							<div className="preview-grid">
+								<section className="preview-card">
+									<div className="preview-card-head">
+										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+											{m.raw_preview_title()}
+										</h3>
 										<button
 											type="button"
-											className={`locale-option ocr-lang-option${ocrPreset === preset.code ? ' is-active' : ''}`}
-											aria-current={ocrPreset === preset.code ? 'true' : undefined}
+											onClick={() => fileInputRef.current?.click()}
+											className="action-pill ghost-pill compact-pill"
+											disabled={isBusy}
+										>
+											{m.replace_image()}
+										</button>
+									</div>
+									<div className="preview-toolbar">
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('raw', -1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={rawPreviewTransform.scale <= MIN_PREVIEW_SCALE}
+										>
+											<SearchX size={16} />
+											{m.preview_zoom_out()}
+										</button>
+										<button
+											type="button"
+											onClick={() => resetPreviewTransform('raw')}
+											className="action-pill ghost-pill compact-pill"
+											disabled={rawPreviewTransform.scale === 1}
+										>
+											{m.preview_zoom_reset()}
+										</button>
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('raw', 1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={rawPreviewTransform.scale >= MAX_PREVIEW_SCALE}
+										>
+											<Search size={16} />
+											{m.preview_zoom_in()}
+										</button>
+										<button
+											type="button"
 											onClick={() => {
-												void handlePresetChange(preset.code);
-												setOcrLangOpen(false);
+												setIsPanMode((current) => !current);
+											}}
+											className={`action-pill ghost-pill compact-pill ${isPanMode ? 'is-active' : ''}`}
+										>
+											<Move size={16} />
+											{isPanMode ? m.preview_pan_off() : m.preview_pan_on()}
+										</button>
+										<span className="preview-zoom-level">
+											{m.preview_zoom_level({ scale: rawZoom })}
+										</span>
+									</div>
+									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
+									<div className="preview-stage is-split">
+										<div
+											ref={rawPreviewSurfaceRef}
+											className={`preview-surface ${cropEnabled ? 'is-crop-enabled' : ''} ${rawPreviewTransform.scale > 1 ? 'is-pannable' : ''} ${isPanMode ? 'is-pan-mode' : ''}`}
+											onPointerDown={handleRawPreviewPointerDown}
+											onPointerMove={handleCropPointerMove}
+											onPointerUp={finishCropDrag}
+											onPointerCancel={finishCropDrag}
+											onWheel={(event) => {
+												handlePreviewWheel('raw', event);
 											}}
 										>
-											<span className="ocr-lang-short">{preset.shortLabel}</span>
-											{getPresetLabel(preset.code)}
-										</button>
-									</li>
-								))}
-							</ul>
-						)}
-					</div>
-
-					<div className="control-grid">
-						<section className="control-card">
-							<div className="control-head">
-								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-									{m.preprocess_title()}
-								</h3>
-								<SlidersHorizontal size={16} />
-							</div>
-
-							<label className="switch-row">
-								<input
-									type="checkbox"
-									checked={processing.grayscale}
-									onChange={(event) => {
-										handleProcessingChange('grayscale', event.target.checked);
-									}}
-								/>
-								<span>{m.preprocess_grayscale()}</span>
-							</label>
-
-							<label className="switch-row">
-								<input
-									type="checkbox"
-									checked={processing.thresholdEnabled}
-									onChange={(event) => {
-										handleProcessingChange(
-											'thresholdEnabled',
-											event.target.checked,
-										);
-									}}
-								/>
-								<span>{m.preprocess_threshold()}</span>
-							</label>
-
-							<label className="control-field">
-								<div className="control-label-row">
-									<span>{m.preprocess_threshold()}</span>
-									<strong>{processing.threshold}</strong>
-								</div>
-								<input
-									className="range-input"
-									type="range"
-									min="0"
-									max="255"
-									value={processing.threshold}
-									disabled={!processing.thresholdEnabled}
-									onChange={(event) => {
-										handleProcessingChange(
-											'threshold',
-											Number(event.target.value),
-										);
-									}}
-								/>
-							</label>
-
-							<label className="control-field">
-								<div className="control-label-row">
-									<span>{m.preprocess_contrast()}</span>
-									<strong>{contrastLabel}</strong>
-								</div>
-								<input
-									className="range-input"
-									type="range"
-									min="-100"
-									max="100"
-									value={processing.contrast}
-									onChange={(event) => {
-										handleProcessingChange(
-											'contrast',
-											Number(event.target.value),
-										);
-									}}
-								/>
-							</label>
-
-							<p className="control-copy muted-copy">
-								{m.preprocess_threshold_hint()}
-							</p>
-
-							<div className="control-actions">
-								<button
-									type="button"
-									onClick={() => {
-										void handleApplyProcessing();
-									}}
-									className="action-pill compact-pill"
-									disabled={!sourceFileRef.current || isBusy}
-								>
-									{m.preprocess_apply()}
-								</button>
-								<button
-									type="button"
-									onClick={handleResetProcessing}
-									className="action-pill ghost-pill compact-pill"
-									disabled={isBusy}
-								>
-									{m.preprocess_reset()}
-								</button>
-							</div>
-						</section>
-
-						<section className="control-card">
-							<div className="control-head">
-								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-									{m.crop_title()}
-								</h3>
-								<Crop size={16} />
-							</div>
-
-							<label className="switch-row">
-								<input
-									type="checkbox"
-									checked={cropEnabled}
-									onChange={(event) => {
-										setCropEnabled(event.target.checked);
-										if (!event.target.checked) {
-											setCropSelection(null);
-										}
-									}}
-									disabled={isBusy}
-								/>
-								<span>{m.crop_enable()}</span>
-							</label>
-
-							<p className="control-copy muted-copy">{m.crop_hint()}</p>
-
-							{cropPixels ? (
-								<div className="selection-card is-stacked">
-									<strong>{m.crop_selection_active()}</strong>
-									<span>
-										{m.crop_selection_size({
-											width: cropPixels.width,
-											height: cropPixels.height,
-										})}
-									</span>
-									<span>
-										{m.crop_selection_origin({
-											x: cropPixels.x,
-											y: cropPixels.y,
-										})}
-									</span>
-								</div>
-							) : (
-								<p className="control-copy muted-copy">{m.crop_empty()}</p>
-							)}
-
-							<div className="control-actions">
-								<button
-									type="button"
-									onClick={() => {
-										void handleApplyProcessing();
-									}}
-									className="action-pill compact-pill"
-									disabled={!sourceFileRef.current || !cropPixels || isBusy}
-								>
-									{m.crop_apply()}
-								</button>
-								<button
-									type="button"
-									onClick={() => {
-										setCropSelection(null);
-										setCropEnabled(false);
-									}}
-									className="action-pill ghost-pill compact-pill"
-									disabled={!cropSelection || isBusy}
-								>
-									{m.crop_clear()}
-								</button>
-							</div>
-						</section>
-
-						<section className="control-card">
-							<div className="control-head">
-								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-									{m.overlay_title()}
-								</h3>
-								<button
-									type="button"
-									onClick={() => {
-										setShowBoxes((current) => !current);
-									}}
-									className="action-pill ghost-pill compact-pill"
-									disabled={!detectedWords.length}
-								>
-									{showBoxes ? <EyeOff size={16} /> : <Eye size={16} />}
-									{overlayActionLabel}
-								</button>
-							</div>
-
-							{selectedWord ? (
-								<div className="selection-card">
-									<strong>{selectedWord.text}</strong>
-									<span>{Math.round(selectedWord.confidence)}%</span>
-								</div>
-							) : (
-								<p className="control-copy muted-copy">{m.overlay_empty()}</p>
-							)}
-						</section>
-					</div>
-
-					<input
-						ref={fileInputRef}
-						type="file"
-						multiple
-						accept="image/*"
-						className="hidden"
-						onChange={(event) => {
-							void handleImageFiles(event.target.files, 'picker');
-						}}
-					/>
-
-					<section
-						className={`ocr-dropzone ${isDragging ? 'is-dragging' : ''} ${asset ? 'has-image' : ''}`}
-						aria-label={m.dropzone_aria()}
-						onDragEnter={(event) => {
-							event.preventDefault();
-							setIsDragging(true);
-						}}
-						onDragOver={(event) => {
-							event.preventDefault();
-							setIsDragging(true);
-						}}
-						onDragLeave={(event) => {
-							event.preventDefault();
-							setIsDragging(false);
-						}}
-						onDrop={(event) => {
-							event.preventDefault();
-							setIsDragging(false);
-							void handleImageFiles(event.dataTransfer.files, 'drop');
-						}}
-					>
-						{asset ? (
-							<>
-								<div className="preview-meta">
-									<span>{activePreset.shortLabel}</span>
-									<span>{currentSourceLabel}</span>
-									<span>{formatBytes(asset.size)}</span>
-									<span>{asset.type.replace('image/', '')}</span>
-								</div>
-								<div className="preview-grid">
-									<section className="preview-card">
-										<div className="preview-card-head">
-											<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-												{m.raw_preview_title()}
-											</h3>
-											<button
-												type="button"
-												onClick={() => fileInputRef.current?.click()}
-												className="action-pill ghost-pill compact-pill"
-												disabled={isBusy}
-											>
-												{m.replace_image()}
-											</button>
-										</div>
-										<div className="preview-toolbar">
-											<button
-												type="button"
-												onClick={() => handlePreviewZoom('raw', -1)}
-												className="action-pill ghost-pill compact-pill"
-												disabled={
-													rawPreviewTransform.scale <= MIN_PREVIEW_SCALE
-												}
-											>
-												<SearchX size={16} />
-												{m.preview_zoom_out()}
-											</button>
-											<button
-												type="button"
-												onClick={() => resetPreviewTransform('raw')}
-												className="action-pill ghost-pill compact-pill"
-												disabled={rawPreviewTransform.scale === 1}
-											>
-												{m.preview_zoom_reset()}
-											</button>
-											<button
-												type="button"
-												onClick={() => handlePreviewZoom('raw', 1)}
-												className="action-pill ghost-pill compact-pill"
-												disabled={
-													rawPreviewTransform.scale >= MAX_PREVIEW_SCALE
-												}
-											>
-												<Search size={16} />
-												{m.preview_zoom_in()}
-											</button>
-											<button
-												type="button"
-												onClick={() => {
-													setIsPanMode((current) => !current);
-												}}
-												className={`action-pill ghost-pill compact-pill ${isPanMode ? 'is-active' : ''}`}
-											>
-												<Move size={16} />
-												{isPanMode ? m.preview_pan_off() : m.preview_pan_on()}
-											</button>
-											<span className="preview-zoom-level">
-												{m.preview_zoom_level({ scale: rawZoom })}
-											</span>
-										</div>
-										<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
-										<div className="preview-stage is-split">
 											<div
-												ref={rawPreviewSurfaceRef}
-												className={`preview-surface ${cropEnabled ? 'is-crop-enabled' : ''} ${rawPreviewTransform.scale > 1 ? 'is-pannable' : ''} ${isPanMode ? 'is-pan-mode' : ''}`}
-												onPointerDown={handleRawPreviewPointerDown}
-												onPointerMove={handleCropPointerMove}
-												onPointerUp={finishCropDrag}
-												onPointerCancel={finishCropDrag}
-												onWheel={(event) => {
-													handlePreviewWheel('raw', event);
-												}}
+												className="preview-canvas"
+												style={rawPreviewTransformStyle}
 											>
+												<img
+													src={asset.url}
+													alt={asset.name}
+													className="ocr-preview"
+												/>
+												{cropEnabled && cropBoxStyle ? (
+													<div
+														className={`crop-layer ${isPanMode ? 'is-pan-mode' : ''}`}
+														aria-hidden="true"
+													>
+														<div
+															className={`crop-box ${isCropping ? 'is-drawing' : ''} ${isMovingCrop ? 'is-moving' : ''}`}
+															style={cropBoxStyle}
+															onPointerDown={handleCropMovePointerDown}
+														>
+															<span className="crop-box-label">
+																{m.crop_label()}
+															</span>
+															{cropHandles.map((handle) => (
+																<button
+																	key={handle}
+																	type="button"
+																	onPointerDown={(event) => {
+																		handleCropHandlePointerDown(handle, event);
+																	}}
+																	className={`crop-handle is-${handle}`}
+																	aria-label={m.crop_resize_handle({
+																		handle,
+																	})}
+																	disabled={isBusy}
+																/>
+															))}
+														</div>
+													</div>
+												) : null}
+											</div>
+										</div>
+									</div>
+								</section>
+
+								<section className="preview-card">
+									<div className="preview-card-head">
+										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+											{m.processed_preview_title()}
+										</h3>
+										<span className="preview-status-pill">{previewStatus}</span>
+									</div>
+									<div className="preview-toolbar">
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('processed', -1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={
+												processedPreviewTransform.scale <= MIN_PREVIEW_SCALE
+											}
+										>
+											<SearchX size={16} />
+											{m.preview_zoom_out()}
+										</button>
+										<button
+											type="button"
+											onClick={() => resetPreviewTransform('processed')}
+											className="action-pill ghost-pill compact-pill"
+											disabled={processedPreviewTransform.scale === 1}
+										>
+											{m.preview_zoom_reset()}
+										</button>
+										<button
+											type="button"
+											onClick={() => handlePreviewZoom('processed', 1)}
+											className="action-pill ghost-pill compact-pill"
+											disabled={
+												processedPreviewTransform.scale >= MAX_PREVIEW_SCALE
+											}
+										>
+											<Search size={16} />
+											{m.preview_zoom_in()}
+										</button>
+										<span className="preview-zoom-level">
+											{m.preview_zoom_level({ scale: processedZoom })}
+										</span>
+									</div>
+									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
+									<div className="preview-stage is-split">
+										<div
+											ref={processedPreviewSurfaceRef}
+											className={`preview-surface ${processedPreviewTransform.scale > 1 ? 'is-pannable' : ''}`}
+											onPointerDown={handleProcessedPreviewPointerDown}
+											onWheel={(event) => {
+												handlePreviewWheel('processed', event);
+											}}
+										>
+											{processedPreview ? (
 												<div
 													className="preview-canvas"
-													style={rawPreviewTransformStyle}
+													style={processedPreviewTransformStyle}
 												>
 													<img
-														src={asset.url}
-														alt={asset.name}
+														src={processedPreview.url}
+														alt={m.processed_preview_alt()}
 														className="ocr-preview"
 													/>
-													{cropEnabled && cropBoxStyle ? (
-														<div
-															className={`crop-layer ${isPanMode ? 'is-pan-mode' : ''}`}
-															aria-hidden="true"
-														>
-															<div
-																className={`crop-box ${isCropping ? 'is-drawing' : ''} ${isMovingCrop ? 'is-moving' : ''}`}
-																style={cropBoxStyle}
-																onPointerDown={handleCropMovePointerDown}
-															>
-																<span className="crop-box-label">
-																	{m.crop_label()}
-																</span>
-																{cropHandles.map((handle) => (
-																	<button
-																		key={handle}
-																		type="button"
-																		onPointerDown={(event) => {
-																			handleCropHandlePointerDown(
-																				handle,
-																				event,
-																			);
-																		}}
-																		className={`crop-handle is-${handle}`}
-																		aria-label={m.crop_resize_handle({
-																			handle,
-																		})}
-																		disabled={isBusy}
+													{overlayPreview && processedLayout ? (
+														<div className="overlay-layer" aria-hidden="true">
+															{detectedWords.map((word, index) => {
+																const left =
+																	processedLayout.left +
+																	(word.bbox.x0 / overlayPreview.width) *
+																		processedLayout.width;
+																const top =
+																	processedLayout.top +
+																	(word.bbox.y0 / overlayPreview.height) *
+																		processedLayout.height;
+																const width =
+																	((word.bbox.x1 - word.bbox.x0) /
+																		overlayPreview.width) *
+																	processedLayout.width;
+																const height =
+																	((word.bbox.y1 - word.bbox.y0) /
+																		overlayPreview.height) *
+																	processedLayout.height;
+
+																return (
+																	<div
+																		key={getWordKey(word)}
+																		className={`word-box ${selectedWordIndex === index ? 'is-selected' : ''}`}
+																		style={{ left, top, width, height }}
 																	/>
-																))}
-															</div>
+																);
+															})}
 														</div>
 													) : null}
 												</div>
-											</div>
+											) : (
+												<div className="preview-loading">
+													{m.processed_preview_loading()}
+												</div>
+											)}
 										</div>
-									</section>
-
-									<section className="preview-card">
-										<div className="preview-card-head">
-											<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-												{m.processed_preview_title()}
-											</h3>
-											<span className="preview-status-pill">
-												{previewStatus}
-											</span>
-										</div>
-										<div className="preview-toolbar">
-											<button
-												type="button"
-												onClick={() => handlePreviewZoom('processed', -1)}
-												className="action-pill ghost-pill compact-pill"
-												disabled={
-													processedPreviewTransform.scale <= MIN_PREVIEW_SCALE
-												}
-											>
-												<SearchX size={16} />
-												{m.preview_zoom_out()}
-											</button>
-											<button
-												type="button"
-												onClick={() => resetPreviewTransform('processed')}
-												className="action-pill ghost-pill compact-pill"
-												disabled={processedPreviewTransform.scale === 1}
-											>
-												{m.preview_zoom_reset()}
-											</button>
-											<button
-												type="button"
-												onClick={() => handlePreviewZoom('processed', 1)}
-												className="action-pill ghost-pill compact-pill"
-												disabled={
-													processedPreviewTransform.scale >= MAX_PREVIEW_SCALE
-												}
-											>
-												<Search size={16} />
-												{m.preview_zoom_in()}
-											</button>
-											<span className="preview-zoom-level">
-												{m.preview_zoom_level({ scale: processedZoom })}
-											</span>
-										</div>
-										<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
-										<div className="preview-stage is-split">
-											<div
-												ref={processedPreviewSurfaceRef}
-												className={`preview-surface ${processedPreviewTransform.scale > 1 ? 'is-pannable' : ''}`}
-												onPointerDown={handleProcessedPreviewPointerDown}
-												onWheel={(event) => {
-													handlePreviewWheel('processed', event);
-												}}
-											>
-												{processedPreview ? (
-													<div
-														className="preview-canvas"
-														style={processedPreviewTransformStyle}
-													>
-														<img
-															src={processedPreview.url}
-															alt={m.processed_preview_alt()}
-															className="ocr-preview"
-														/>
-														{overlayPreview && processedLayout ? (
-															<div className="overlay-layer" aria-hidden="true">
-																{detectedWords.map((word, index) => {
-																	const left =
-																		processedLayout.left +
-																		(word.bbox.x0 / overlayPreview.width) *
-																			processedLayout.width;
-																	const top =
-																		processedLayout.top +
-																		(word.bbox.y0 / overlayPreview.height) *
-																			processedLayout.height;
-																	const width =
-																		((word.bbox.x1 - word.bbox.x0) /
-																			overlayPreview.width) *
-																		processedLayout.width;
-																	const height =
-																		((word.bbox.y1 - word.bbox.y0) /
-																			overlayPreview.height) *
-																		processedLayout.height;
-
-																	return (
-																		<div
-																			key={getWordKey(word)}
-																			className={`word-box ${selectedWordIndex === index ? 'is-selected' : ''}`}
-																			style={{ left, top, width, height }}
-																		/>
-																	);
-																})}
-															</div>
-														) : null}
-													</div>
-												) : (
-													<div className="preview-loading">
-														{m.processed_preview_loading()}
-													</div>
-												)}
-											</div>
-										</div>
-									</section>
-								</div>
-								<div className="preview-footer">
-									<strong>{asset.name}</strong>
-									<span>{previewStatus}</span>
-								</div>
-							</>
-						) : (
-							<div className="dropzone-empty">
-								<div className="dropzone-icon">
-									<ClipboardPaste size={24} />
-								</div>
-								<p className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-									{m.dropzone_title()}
-								</p>
-								<button
-									type="button"
-									onClick={() => fileInputRef.current?.click()}
-									className="action-pill"
-									disabled={isBusy}
-								>
-									<ImagePlus size={16} />
-									{m.select_image()}
-								</button>
+									</div>
+								</section>
 							</div>
-						)}
-					</section>
-
-					<div className="meter-wrap">
-						<div className="meter-copy">
-							<span>{status}</span>
-							<span>{meterProgress}%</span>
-						</div>
-						<div className="meter-track" aria-hidden="true">
-							<div
-								className="meter-fill"
-								style={{ width: `${meterProgress}%` }}
-							/>
-						</div>
-					</div>
-
-					{error ? <p className="status-error">{error}</p> : null}
-
-					<div className="mt-5 grid gap-3 sm:grid-cols-3">
-						{stats.map(([label, value]) => (
-							<div key={label} className="stat-card">
-								<span className="stat-label">{label}</span>
-								<strong>{value}</strong>
+							<div className="preview-footer">
+								<strong>{asset.name}</strong>
+								<span>{previewStatus}</span>
 							</div>
-						))}
-					</div>
-
-					{detectedWords.length ? (
-						<section className="mt-5">
-							<div className="panel-head gap-y-3">
-								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-									{m.detected_words_title({ count: detectedWords.length })}
-								</h3>
-								<button
-									type="button"
-									onClick={() => {
-										setSelectedWordIndex(null);
-									}}
-									className="action-pill ghost-pill compact-pill"
-									disabled={selectedWordIndex === null}
-								>
-									{m.detected_words_clear()}
-								</button>
+						</>
+					) : (
+						<div className="dropzone-empty">
+							<div className="dropzone-icon">
+								<ClipboardPaste size={24} />
 							</div>
-							<div className="word-list">
-								{visibleWords.map((word, index) => {
-									const isActive = selectedWordIndex === index;
-
-									return (
-										<button
-											key={getWordKey(word)}
-											type="button"
-											onClick={() => {
-												setSelectedWordIndex(isActive ? null : index);
-											}}
-											className={`word-chip ${isActive ? 'is-active' : ''}`}
-										>
-											<span>{word.text}</span>
-											<small>{Math.round(word.confidence)}%</small>
-										</button>
-									);
-								})}
-							</div>
-						</section>
-					) : null}
-				</div>
-
-				<div className="ocr-panel">
-					<div className="panel-head">
-						<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-							{m.output_title()}
-						</h2>
-						<div className="flex flex-wrap gap-2">
+							<p className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.dropzone_title()}
+							</p>
 							<button
 								type="button"
-								onClick={handleCopy}
-								disabled={!ocrText}
+								onClick={() => fileInputRef.current?.click()}
 								className="action-pill"
-							>
-								{copied ? <Check size={18} /> : <Copy size={18} />}
-								{copied ? m.copied_text() : m.copy_text()}
-							</button>
-							<button
-								type="button"
-								onClick={() => void handleReset()}
-								className="action-pill ghost-pill"
 								disabled={isBusy}
 							>
-								<RotateCcw size={18} />
-								{m.reset()}
+								<ImagePlus size={16} />
+								{m.select_image()}
 							</button>
 						</div>
+					)}
+				</section>
+
+				<div className="meter-wrap">
+					<div className="meter-copy">
+						<span>{status}</span>
+						<span>{meterProgress}%</span>
 					</div>
-
-					<div className={`ocr-output ${!ocrText ? 'is-empty' : ''}`}>
-						{isRunning ? (
-							<div className="output-state">
-								<LoaderCircle className="animate-spin" size={24} />
-								<p>{m.output_running()}</p>
-							</div>
-						) : null}
-
-						{!isRunning && !ocrText ? (
-							<div className="output-state">
-								<ScanText size={24} />
-								<p>{m.output_empty()}</p>
-							</div>
-						) : null}
-
-						{ocrText ? <pre>{ocrText}</pre> : null}
+					<div className="meter-track" aria-hidden="true">
+						<div
+							className="meter-fill"
+							style={{ width: `${meterProgress}%` }}
+						/>
 					</div>
+				</div>
 
+				{error ? <p className="status-error">{error}</p> : null}
+
+				<div className="mt-5 grid gap-3 sm:grid-cols-3">
+					{stats.map(([label, value]) => (
+						<div key={label} className="stat-card">
+							<span className="stat-label">{label}</span>
+							<strong>{value}</strong>
+						</div>
+					))}
+				</div>
+
+				{detectedWords.length ? (
 					<section className="mt-5">
 						<div className="panel-head gap-y-3">
 							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.export_title()}
+								{m.detected_words_title({ count: detectedWords.length })}
 							</h3>
+							<button
+								type="button"
+								onClick={() => {
+									setSelectedWordIndex(null);
+								}}
+								className="action-pill ghost-pill compact-pill"
+								disabled={selectedWordIndex === null}
+							>
+								{m.detected_words_clear()}
+							</button>
 						</div>
-						<div className="export-strip">
-							<button
-								type="button"
-								onClick={handleExportText}
-								disabled={!ocrText}
-								className="action-pill ghost-pill compact-pill"
-							>
-								<Download size={16} />
-								{m.export_txt()}
-							</button>
-							<button
-								type="button"
-								onClick={handleExportJson}
-								disabled={!lastRunSnapshot}
-								className="action-pill ghost-pill compact-pill"
-							>
-								<Download size={16} />
-								{m.export_json()}
-							</button>
-							<button
-								type="button"
-								onClick={handleExportBoxes}
-								disabled={!detectedWords.length || !lastRunSnapshot}
-								className="action-pill ghost-pill compact-pill"
-							>
-								<Download size={16} />
-								{m.export_boxes()}
-							</button>
-							<button
-								type="button"
-								onClick={handleExportBoxesCsv}
-								disabled={!detectedWords.length || !lastRunSnapshot}
-								className="action-pill ghost-pill compact-pill"
-							>
-								<Download size={16} />
-								{m.export_csv()}
-							</button>
+						<div className="word-list">
+							{visibleWords.map((word, index) => {
+								const isActive = selectedWordIndex === index;
+
+								return (
+									<button
+										key={getWordKey(word)}
+										type="button"
+										onClick={() => {
+											setSelectedWordIndex(isActive ? null : index);
+										}}
+										className={`word-chip ${isActive ? 'is-active' : ''}`}
+									>
+										<span>{word.text}</span>
+										<small>{Math.round(word.confidence)}%</small>
+									</button>
+								);
+							})}
 						</div>
 					</section>
+				) : null}
+			</div>
 
-					{batchJobs.length ? (
-						<section className="mt-5">
-							<div className="panel-head gap-y-3">
-								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-									{m.batch_title({ count: batchJobs.length })}
-								</h3>
-								<div className="batch-toolbar">
-									<button
-										type="button"
-										onClick={handleExportBatchZip}
-										className="action-pill ghost-pill compact-pill"
-										disabled={!batchJobs.length}
-									>
-										<Download size={16} />
-										{m.batch_export_zip()}
-									</button>
-									<button
-										type="button"
-										onClick={() => {
-											void cancelBatchRun();
-										}}
-										className="action-pill ghost-pill compact-pill"
-										disabled={!isBatchRunning}
-									>
-										<X size={16} />
-										{m.batch_cancel()}
-									</button>
-									<button
-										type="button"
-										onClick={() => {
-											setBatchJobs([]);
-											setActiveBatchJobId(null);
-										}}
-										className="action-pill ghost-pill compact-pill"
-										disabled={isBatchRunning}
-									>
-										{m.batch_clear()}
-									</button>
-								</div>
+			<div className="ocr-panel">
+				<div className="panel-head">
+					<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+						{m.output_title()}
+					</h2>
+					<div className="flex flex-wrap gap-2">
+						<button
+							type="button"
+							onClick={handleCopy}
+							disabled={!ocrText}
+							className="action-pill"
+						>
+							{copied ? <Check size={18} /> : <Copy size={18} />}
+							{copied ? m.copied_text() : m.copy_text()}
+						</button>
+						<button
+							type="button"
+							onClick={() => void handleReset()}
+							className="action-pill ghost-pill"
+							disabled={isBusy}
+						>
+							<RotateCcw size={18} />
+							{m.reset()}
+						</button>
+					</div>
+				</div>
+
+				<div className={`ocr-output ${!ocrText ? 'is-empty' : ''}`}>
+					{isRunning ? (
+						<div className="output-state">
+							<LoaderCircle className="animate-spin" size={24} />
+							<p>{m.output_running()}</p>
+						</div>
+					) : null}
+
+					{!isRunning && !ocrText ? (
+						<div className="output-state">
+							<ScanText size={24} />
+							<p>{m.output_empty()}</p>
+						</div>
+					) : null}
+
+					{ocrText ? <pre>{ocrText}</pre> : null}
+				</div>
+
+				<section className="mt-5">
+					<div className="panel-head gap-y-3">
+						<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+							{m.export_title()}
+						</h3>
+					</div>
+					<div className="export-card-grid">
+						<button
+							type="button"
+							onClick={handleExportText}
+							disabled={!ocrText}
+							className="export-card"
+						>
+							<Download size={18} />
+							<div className="export-card-body">
+								<span className="export-card-label">{m.export_txt()}</span>
+								<span className="export-card-hint">.txt</span>
 							</div>
-							<div className="batch-list">
-								{batchJobs.map((job) => {
-									const isActive = activeBatchJobId === job.id;
-									const summary =
-										job.status === 'done'
-											? m.batch_stats({
-													words: job.wordCount,
-													lines: job.lineCount,
-													confidence: job.confidence ?? 0,
-												})
-											: job.error || m.batch_pending();
+						</button>
+						<button
+							type="button"
+							onClick={handleExportJson}
+							disabled={!lastRunSnapshot}
+							className="export-card"
+						>
+							<Download size={18} />
+							<div className="export-card-body">
+								<span className="export-card-label">{m.export_json()}</span>
+								<span className="export-card-hint">.json</span>
+							</div>
+						</button>
+						<button
+							type="button"
+							onClick={handleExportBoxes}
+							disabled={!detectedWords.length || !lastRunSnapshot}
+							className="export-card"
+						>
+							<Download size={18} />
+							<div className="export-card-body">
+								<span className="export-card-label">{m.export_boxes()}</span>
+								<span className="export-card-hint">.json</span>
+							</div>
+						</button>
+						<button
+							type="button"
+							onClick={handleExportBoxesCsv}
+							disabled={!detectedWords.length || !lastRunSnapshot}
+							className="export-card"
+						>
+							<Download size={18} />
+							<div className="export-card-body">
+								<span className="export-card-label">{m.export_csv()}</span>
+								<span className="export-card-hint">.csv</span>
+							</div>
+						</button>
+					</div>
+				</section>
 
-									return (
-										<article
-											key={job.id}
-											className={`batch-card ${isActive ? 'is-active' : ''}`}
-										>
-											<div className="batch-card-strip">
-												<div className="batch-thumb-strip" aria-hidden="true">
-													{job.thumbnailDataUrl ? (
-														<img
-															src={job.thumbnailDataUrl}
-															alt={job.name}
-															className="batch-thumb-image"
-														/>
-													) : (
-														<div className="batch-thumb-fallback">
-															<ImagePlus size={18} />
-														</div>
-													)}
+				{batchJobs.length ? (
+					<section className="mt-5">
+						<div className="panel-head gap-y-3">
+							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.batch_title({ count: batchJobs.length })}
+							</h3>
+							<div className="batch-toolbar">
+								<button
+									type="button"
+									onClick={handleExportBatchZip}
+									className="action-pill ghost-pill compact-pill"
+									disabled={!batchJobs.length}
+								>
+									<Download size={16} />
+									{m.batch_export_zip()}
+								</button>
+								<button
+									type="button"
+									onClick={() => {
+										void cancelBatchRun();
+									}}
+									className="action-pill ghost-pill compact-pill"
+									disabled={!isBatchRunning}
+								>
+									<X size={16} />
+									{m.batch_cancel()}
+								</button>
+								<button
+									type="button"
+									onClick={() => {
+										setBatchJobs([]);
+										setActiveBatchJobId(null);
+									}}
+									className="action-pill ghost-pill compact-pill"
+									disabled={isBatchRunning}
+								>
+									{m.batch_clear()}
+								</button>
+							</div>
+						</div>
+						<div className="batch-list">
+							{batchJobs.map((job) => {
+								const isActive = activeBatchJobId === job.id;
+								const summary =
+									job.status === 'done'
+										? m.batch_stats({
+												words: job.wordCount,
+												lines: job.lineCount,
+												confidence: job.confidence ?? 0,
+											})
+										: job.error || m.batch_pending();
+
+								return (
+									<article
+										key={job.id}
+										className={`batch-card ${isActive ? 'is-active' : ''}`}
+									>
+										<div className="batch-card-strip">
+											<div className="batch-thumb-strip" aria-hidden="true">
+												{job.thumbnailDataUrl ? (
+													<img
+														src={job.thumbnailDataUrl}
+														alt={job.name}
+														className="batch-thumb-image"
+													/>
+												) : (
+													<div className="batch-thumb-fallback">
+														<ImagePlus size={18} />
+													</div>
+												)}
+											</div>
+											<div className="batch-card-body">
+												<div className="batch-head">
+													<strong>{job.name}</strong>
+													<span className={`batch-status is-${job.status}`}>
+														{getBatchStatusLabel(job.status)}
+													</span>
 												</div>
-												<div className="batch-card-body">
-													<div className="batch-head">
-														<strong>{job.name}</strong>
-														<span className={`batch-status is-${job.status}`}>
-															{getBatchStatusLabel(job.status)}
-														</span>
-													</div>
-													<div className="batch-meta">
-														<span>{getSourceLabel(job.source)}</span>
-														{job.snapshot ? (
-															<span>{getPresetLabel(job.snapshot.preset)}</span>
-														) : null}
-													</div>
-													<p className="batch-copy">{summary}</p>
-													<div className="batch-actions">
-														<button
-															type="button"
-															onClick={() => {
-																void handleOpenBatchJob(job.id);
-															}}
-															className="action-pill ghost-pill compact-pill"
-															disabled={isBusy || job.status === 'running'}
-														>
-															{m.batch_open()}
-														</button>
-													</div>
+												<div className="batch-meta">
+													<span>{getSourceLabel(job.source)}</span>
+													{job.snapshot ? (
+														<span>{getPresetLabel(job.snapshot.preset)}</span>
+													) : null}
+												</div>
+												<p className="batch-copy">{summary}</p>
+												<div className="batch-actions">
+													<button
+														type="button"
+														onClick={() => {
+															void handleOpenBatchJob(job.id);
+														}}
+														className="action-pill ghost-pill compact-pill"
+														disabled={isBusy || job.status === 'running'}
+													>
+														{m.batch_open()}
+													</button>
 												</div>
 											</div>
-										</article>
-									);
-								})}
-							</div>
-						</section>
-					) : null}
-				</div>
+										</div>
+									</article>
+								);
+							})}
+						</div>
+					</section>
+				) : null}
+			</div>
 		</main>
 	);
 }

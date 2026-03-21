@@ -1192,6 +1192,97 @@ pre code {
   margin-top: 0.5rem;
 }
 
+.export-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  margin-top: 0;
+}
+
+.export-card {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.85rem 1rem;
+  background: transparent;
+  border: 2px solid var(--border);
+  border-top: none;
+  border-left: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+  color: var(--ink);
+  transition: background 100ms;
+}
+
+.export-card:nth-child(1) {
+  border-top: none;
+  border-left: none;
+}
+
+.export-card:nth-child(2) {
+  border-left: 2px solid var(--border);
+}
+
+.export-card:nth-child(3) {
+  border-top: 2px solid var(--border);
+}
+
+.export-card:nth-child(4) {
+  border-left: 2px solid var(--border);
+  border-top: 2px solid var(--border);
+}
+
+.export-card svg {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  transition: color 100ms;
+}
+
+.export-card:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.export-card:hover:not(:disabled) svg {
+  color: var(--accent-strong);
+}
+
+.export-card:hover:not(:disabled) .export-card-label {
+  color: var(--accent-strong);
+}
+
+.export-card:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.export-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.export-card-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-card-hint {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
 /* ═══════════════════════════════════════════
    BATCH
    ═══════════════════════════════════════════ */
@@ -1503,6 +1594,24 @@ a {
   .control-grid {
     grid-template-columns: 1fr;
   }
+
+  .export-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .export-card:nth-child(2) {
+    border-left: none;
+  }
+
+  .export-card:nth-child(3),
+  .export-card:nth-child(4) {
+    border-top: 2px solid var(--border);
+    border-left: none;
+  }
+
+  .export-card:nth-child(4) {
+    border-left: none;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1525,5 +1634,23 @@ a {
 
   .batch-thumb-strip {
     max-width: 10rem;
+  }
+
+  .export-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .export-card:nth-child(2) {
+    border-left: none;
+  }
+
+  .export-card:nth-child(3),
+  .export-card:nth-child(4) {
+    border-top: 2px solid var(--border);
+    border-left: none;
+  }
+
+  .export-card:nth-child(4) {
+    border-left: none;
   }
 }
