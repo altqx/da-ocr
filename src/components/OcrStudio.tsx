@@ -1,3 +1,4 @@
+import { useServerFn } from '@tanstack/react-start';
 import { strToU8, zipSync } from 'fflate';
 import {
 	Check,
@@ -25,8 +26,8 @@ import {
 	useRef,
 	useState,
 } from 'react';
-import type { Worker as TesseractWorker } from 'tesseract.js';
 import { m } from '../i18n';
+import { runLensOcr } from '../lib/lens-ocr';
 
 type ImageAsset = {
 	name: string;
@@ -49,7 +50,7 @@ type CropHandle = 'nw' | 'ne' | 'sw' | 'se';
 
 type DetectedWord = {
 	text: string;
-	confidence: number;
+	confidence: number | null;
 	bbox: {
 		x0: number;
 		y0: number;
@@ -78,14 +79,8 @@ type PreparedImage = {
 	crop: CropSelection | null;
 };
 
-type OcrPage = Awaited<ReturnType<TesseractWorker['recognize']>>['data'];
-type OcrBlock = NonNullable<OcrPage['blocks']>[number];
-type OcrParagraph = OcrBlock['paragraphs'][number];
-type OcrLine = OcrParagraph['lines'][number];
-type OcrWord = OcrLine['words'][number];
-
 type OcrRunSnapshot = {
-	preset: ResolvedPresetCode;
+	detectedLanguage: string | null;
 	processing: ProcessingSettings;
 	crop: CropSelection | null;
 	source: ImageAsset['source'];
@@ -125,7 +120,7 @@ type OcrExecutionResult =
 			ok: true;
 			text: string;
 			words: DetectedWord[];
-			confidence: number;
+			confidence: number | null;
 			snapshot: OcrRunSnapshot;
 	  }
 	| {
@@ -140,21 +135,13 @@ type PersistedBatchQueue = {
 	jobs: BatchJob[];
 };
 
-const OCR_PRESETS = [
-	{ code: 'auto', shortLabel: 'AUTO' },
-	{ code: 'eng', shortLabel: 'EN' },
-	{ code: 'deu', shortLabel: 'DE' },
-	{ code: 'jpn', shortLabel: 'JP' },
-	{ code: 'tha', shortLabel: 'TH' },
-	{ code: 'eng+deu', shortLabel: 'EN+DE' },
-	{ code: 'eng+jpn', shortLabel: 'EN+JP' },
-	{ code: 'eng+tha', shortLabel: 'EN+TH' },
-] as const;
+type CompatibilityFeature =
+	| 'canvas-to-blob'
+	| 'create-image-bitmap'
+	| 'file-api'
+	| 'form-data'
+	| 'resize-observer';
 
-type OcrPresetCode = (typeof OCR_PRESETS)[number]['code'];
-type ResolvedPresetCode = Exclude<OcrPresetCode, 'auto'>;
-
-const DEFAULT_PRESET: OcrPresetCode = 'eng';
 const DEFAULT_PROCESSING: ProcessingSettings = {
 	grayscale: false,
 	thresholdEnabled: false,
@@ -176,6 +163,40 @@ const BATCH_QUEUE_DB_NAME = 'da-ocr';
 const BATCH_QUEUE_STORE_NAME = 'state';
 const BATCH_QUEUE_STORAGE_KEY = 'batch-queue';
 
+function getCompatibilityIssues(): CompatibilityFeature[] {
+	if (typeof window === 'undefined') {
+		return [];
+	}
+
+	const issues: CompatibilityFeature[] = [];
+
+	if (typeof createImageBitmap !== 'function') {
+		issues.push('create-image-bitmap');
+	}
+
+	if (typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.toBlob) {
+		issues.push('canvas-to-blob');
+	}
+
+	if (
+		typeof File !== 'function' ||
+		typeof URL === 'undefined' ||
+		typeof URL.createObjectURL !== 'function'
+	) {
+		issues.push('file-api');
+	}
+
+	if (typeof FormData !== 'function') {
+		issues.push('form-data');
+	}
+
+	if (typeof ResizeObserver === 'undefined') {
+		issues.push('resize-observer');
+	}
+
+	return issues;
+}
+
 function clamp(value: number, minimum: number, maximum: number) {
 	return Math.min(maximum, Math.max(minimum, value));
 }
@@ -188,49 +209,39 @@ function formatBytes(size: number) {
 	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatStatus(status?: string) {
-	if (!status) {
-		return m.status_processing_image();
+function getDetectedLanguageLabel(language: string | null) {
+	if (!language) {
+		return 'Lens';
 	}
 
-	return status
-		.split(/[_\s-]+/)
-		.filter(Boolean)
-		.map((part) => part[0]?.toUpperCase() + part.slice(1))
-		.join(' ');
-}
-
-function mapScriptToPreset(script: string): ResolvedPresetCode {
-	switch (script) {
-		case 'Japanese':
-			return 'jpn';
-		case 'Thai':
-			return 'tha';
-		case 'Han':
-			return 'jpn';
+	switch (language.toLowerCase()) {
+		case 'de':
+			return 'DE';
+		case 'en':
+			return 'EN';
+		case 'ja':
+			return 'JA';
+		case 'jp':
+			return 'JA';
+		case 'th':
+			return 'TH';
 		default:
-			return 'eng';
+			return language.toUpperCase();
 	}
 }
 
-function getPresetLabel(preset: OcrPresetCode) {
-	switch (preset) {
-		case 'auto':
-			return m.ocr_preset_auto();
-		case 'deu':
-			return m.ocr_preset_deu();
-		case 'jpn':
-			return m.ocr_preset_jpn();
-		case 'tha':
-			return m.ocr_preset_tha();
-		case 'eng+deu':
-			return m.ocr_preset_eng_deu();
-		case 'eng+jpn':
-			return m.ocr_preset_eng_jpn();
-		case 'eng+tha':
-			return m.ocr_preset_eng_tha();
+function getCompatibilityFeatureLabel(feature: CompatibilityFeature) {
+	switch (feature) {
+		case 'canvas-to-blob':
+			return m.compatibility_feature_canvas_to_blob();
+		case 'create-image-bitmap':
+			return m.compatibility_feature_create_image_bitmap();
+		case 'file-api':
+			return m.compatibility_feature_file_api();
+		case 'form-data':
+			return m.compatibility_feature_form_data();
 		default:
-			return m.ocr_preset_eng();
+			return m.compatibility_feature_resize_observer();
 	}
 }
 
@@ -375,7 +386,7 @@ function getWordBoxesCsv(words: DetectedWord[]) {
 		...words.map((word) =>
 			[
 				JSON.stringify(word.text),
-				word.confidence.toFixed(2),
+				word.confidence === null ? '' : word.confidence.toFixed(2),
 				word.bbox.x0,
 				word.bbox.y0,
 				word.bbox.x1,
@@ -762,33 +773,12 @@ function getContainLayout(
 		top: 0,
 	};
 }
-
-function extractOcrOutput(page: OcrPage) {
-	const text = page.text.trim();
-	const words = (page.blocks ?? [])
-		.flatMap((block: OcrBlock) => block.paragraphs)
-		.flatMap((paragraph: OcrParagraph) => paragraph.lines)
-		.flatMap((line: OcrLine) => line.words)
-		.filter((word: OcrWord) => word.text.trim())
-		.map((word: OcrWord) => ({
-			text: word.text,
-			confidence: word.confidence,
-			bbox: word.bbox,
-		}));
-
-	return {
-		text,
-		words,
-		confidence: Math.round(page.confidence),
-	};
-}
-
 export default function OcrStudio() {
+	const runLensOcrFn = useServerFn(runLensOcr);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const rawPreviewSurfaceRef = useRef<HTMLDivElement>(null);
 	const processedPreviewSurfaceRef = useRef<HTMLDivElement>(null);
 	const sourceFileRef = useRef<File | null>(null);
-	const workerRef = useRef<TesseractWorker | null>(null);
 	const rawUrlRef = useRef<string | null>(null);
 	const processedUrlRef = useRef<string | null>(null);
 	const copyTimerRef = useRef<number | null>(null);
@@ -809,9 +799,6 @@ export default function OcrStudio() {
 		startY: number;
 		startCrop: CropSelection;
 	} | null>(null);
-	const batchSchedulerRef = useRef<{
-		terminate: () => Promise<unknown>;
-	} | null>(null);
 	const batchRunRef = useRef<{ id: number; cancelled: boolean } | null>(null);
 	const batchRunIdRef = useRef(0);
 	const previewPanRef = useRef<{
@@ -829,9 +816,6 @@ export default function OcrStudio() {
 	const [detectedWords, setDetectedWords] = useState<DetectedWord[]>([]);
 	const [progress, setProgress] = useState(0);
 	const [status, setStatus] = useState<string>(() => m.status_initial());
-	const [ocrPreset, setOcrPreset] = useState<OcrPresetCode>(DEFAULT_PRESET);
-	const [ocrLangOpen, setOcrLangOpen] = useState(false);
-	const ocrLangRef = useRef<HTMLDivElement>(null);
 	const [processing, setProcessing] =
 		useState<ProcessingSettings>(DEFAULT_PROCESSING);
 	const [cropEnabled, setCropEnabled] = useState(false);
@@ -872,6 +856,9 @@ export default function OcrStudio() {
 	const [activeBatchJobId, setActiveBatchJobId] = useState<string | null>(null);
 	const [isBatchRunning, setIsBatchRunning] = useState(false);
 	const [hasHydratedBatchQueue, setHasHydratedBatchQueue] = useState(false);
+	const [compatibilityIssues, setCompatibilityIssues] = useState<
+		CompatibilityFeature[]
+	>([]);
 
 	const activeCrop = cropEnabled ? cropSelection : null;
 	const deferredProcessing = useDeferredValue(processing);
@@ -879,6 +866,15 @@ export default function OcrStudio() {
 	const initialStatus = m.status_initial();
 	const currentSignature = getRunSignature(processing, activeCrop);
 	const isBusy = isRunning || isBatchRunning;
+	const compatibilityMessage = compatibilityIssues.length
+		? m.compatibility_error({
+				features: compatibilityIssues
+					.map((feature) => getCompatibilityFeatureLabel(feature))
+					.join(', '),
+			})
+		: null;
+	const hasCompatibilityIssue = compatibilityIssues.length > 0;
+	const interactionDisabled = isBusy || hasCompatibilityIssue;
 	const batchProgress =
 		batchJobs.length === 0
 			? 0
@@ -888,38 +884,6 @@ export default function OcrStudio() {
 						job.status === 'error' ||
 						job.status === 'cancelled',
 				).length / batchJobs.length;
-
-	const tearDownWorker = async () => {
-		const activeWorker = workerRef.current;
-
-		if (!activeWorker) {
-			return;
-		}
-
-		workerRef.current = null;
-
-		try {
-			await activeWorker.terminate();
-		} catch {
-			// Ignore termination failures from interrupted runs.
-		}
-	};
-
-	const tearDownBatchScheduler = useCallback(async () => {
-		const activeScheduler = batchSchedulerRef.current;
-
-		if (!activeScheduler) {
-			return;
-		}
-
-		batchSchedulerRef.current = null;
-
-		try {
-			await activeScheduler.terminate();
-		} catch {
-			// Ignore scheduler teardown failures during cancellation.
-		}
-	}, []);
 
 	const getStageSizeForSurface = useCallback(
 		(surface: PreviewSurfaceKey) =>
@@ -980,7 +944,6 @@ export default function OcrStudio() {
 		}
 
 		activeRun.cancelled = true;
-		await tearDownBatchScheduler();
 		setIsBatchRunning(false);
 		setProgress(1);
 		setStatus(m.status_batch_cancelled());
@@ -995,7 +958,7 @@ export default function OcrStudio() {
 						},
 			),
 		);
-	}, [tearDownBatchScheduler]);
+	}, []);
 
 	const replaceSourceAsset = async (
 		file: File,
@@ -1015,12 +978,36 @@ export default function OcrStudio() {
 		setAsset(nextAsset);
 	};
 
+	const scanPreparedImage = async (
+		preparedImage: PreparedImage,
+		fileName: string,
+	) => {
+		const formData = new FormData();
+		formData.set(
+			'image',
+			new File([preparedImage.blob], `${sanitizeBaseName(fileName)}.png`, {
+				type: 'image/png',
+			}),
+		);
+		formData.set('width', String(preparedImage.width));
+		formData.set('height', String(preparedImage.height));
+
+		return runLensOcrFn({ data: formData });
+	};
+
 	const runOcr = async (
 		file: File,
 		source: ImageAsset['source'],
-		presetCode: OcrPresetCode = ocrPreset,
 		cropOverride?: CropSelection | null,
 	): Promise<OcrExecutionResult> => {
+		if (compatibilityMessage) {
+			setStatus(m.compatibility_status());
+			return {
+				ok: false,
+				error: compatibilityMessage,
+			};
+		}
+
 		const runId = ++runIdRef.current;
 		const cropForRun = cropOverride === undefined ? activeCrop : cropOverride;
 		const runProcessing = { ...processing };
@@ -1036,8 +1023,6 @@ export default function OcrStudio() {
 		setStatus(m.status_processing_image());
 		setIsRunning(true);
 		setLastRunSnapshot(null);
-
-		await tearDownWorker();
 
 		try {
 			const preparedImage = await createProcessedImage(
@@ -1057,70 +1042,34 @@ export default function OcrStudio() {
 
 			processedUrlRef.current = preparedImage.url;
 			setProcessedPreview(preparedImage);
-			setProgress(0.08);
+			setProgress(0.2);
+			setStatus(m.status_preparing_ocr({ language: 'Lens' }));
 
-			let resolvedPreset: ResolvedPresetCode =
-				presetCode === 'auto' ? 'eng' : presetCode;
-
-			if (presetCode === 'auto') {
-				setStatus(m.status_detecting_script());
-				try {
-					const { createWorker: createOsdWorker } = await import('tesseract.js');
-					const osdWorker = await createOsdWorker('osd', 1);
-					try {
-						const detectResult = await osdWorker.detect(preparedImage.blob);
-						resolvedPreset = mapScriptToPreset(
-							(detectResult.data as { script?: string }).script ?? '',
-						);
-					} finally {
-						await osdWorker.terminate();
-					}
-				} catch {
-					resolvedPreset = 'eng';
-				}
-
-				if (runId !== runIdRef.current) {
-					return null;
-				}
-			}
-
-			const presetLabel = getPresetLabel(resolvedPreset);
-			setStatus(
-				presetCode === 'auto'
-					? m.status_script_detected({ language: presetLabel })
-					: m.status_preparing_ocr({ language: presetLabel }),
-			);
-
-			const { createWorker } = await import('tesseract.js');
-			const worker = await createWorker(resolvedPreset, 1, {
-				logger: (message: { progress?: number; status?: string }) => {
-					if (runId !== runIdRef.current) {
-						return;
-					}
-
-					setStatus(formatStatus(message.status));
-
-					if (typeof message.progress === 'number') {
-						setProgress(Math.max(0, Math.min(1, message.progress)));
-					}
-				},
-			});
-
-			workerRef.current = worker;
-			const result = await worker.recognize(preparedImage.blob);
+			const result = await scanPreparedImage(preparedImage, file.name);
 
 			if (runId !== runIdRef.current) {
 				return null;
 			}
 
-			const parsedOutput = extractOcrOutput(result.data);
+			const detectedLanguageLabel = getDetectedLanguageLabel(
+				result.detectedLanguage,
+			);
+			const parsedOutput = {
+				text: result.text,
+				words: result.boxes.map((box) => ({
+					text: box.text,
+					confidence: null,
+					bbox: box.bbox,
+				})),
+				confidence: null,
+			};
 
 			setOcrText(parsedOutput.text);
 			setDetectedWords(parsedOutput.words);
 			setConfidence(parsedOutput.confidence);
 			setProgress(1);
 			const snapshot = {
-				preset: resolvedPreset,
+				detectedLanguage: result.detectedLanguage,
 				processing: runProcessing,
 				crop: preparedImage.crop,
 				source,
@@ -1131,8 +1080,8 @@ export default function OcrStudio() {
 			setLastRunSnapshot(snapshot);
 			setStatus(
 				parsedOutput.text
-					? m.status_ocr_complete({ language: presetLabel })
-					: m.status_no_text({ language: presetLabel.toLowerCase() }),
+					? m.status_ocr_complete({ language: detectedLanguageLabel })
+					: m.status_no_text({ language: detectedLanguageLabel.toLowerCase() }),
 			);
 
 			return {
@@ -1147,9 +1096,7 @@ export default function OcrStudio() {
 				return null;
 			}
 
-			const fallbackLabel = getPresetLabel(
-				presetCode === 'auto' ? 'eng' : presetCode,
-			);
+			const fallbackLabel = 'Lens';
 			const message =
 				cause instanceof Error
 					? cause.message
@@ -1165,8 +1112,6 @@ export default function OcrStudio() {
 			if (runId === runIdRef.current) {
 				setIsRunning(false);
 			}
-
-			await tearDownWorker();
 		}
 	};
 
@@ -1174,6 +1119,12 @@ export default function OcrStudio() {
 		files: File[] | FileList | null | undefined,
 		source: ImageAsset['source'],
 	) => {
+		if (compatibilityMessage) {
+			setStatus(m.compatibility_status());
+			setError(compatibilityMessage);
+			return;
+		}
+
 		const nextFiles = Array.from(files ?? []).filter(Boolean);
 
 		if (!nextFiles.length) {
@@ -1224,7 +1175,7 @@ export default function OcrStudio() {
 			setActiveBatchJobId(null);
 			setCropSelection((current) => current);
 			await replaceSourceAsset(jobs[0].file, source);
-			await runOcr(jobs[0].file, source, ocrPreset);
+			await runOcr(jobs[0].file, source);
 			return;
 		}
 
@@ -1241,56 +1192,10 @@ export default function OcrStudio() {
 				cancelled: false,
 			};
 			batchRunRef.current = batchRun;
-			let batchPreset: ResolvedPresetCode =
-				ocrPreset === 'auto' ? 'eng' : ocrPreset;
 			const batchProcessing = { ...processing };
 			const batchCrop = activeCrop;
 
-			if (ocrPreset === 'auto') {
-				setStatus(m.status_detecting_script());
-				try {
-					const { createWorker: createOsdWorker } = await import('tesseract.js');
-					const firstPrepared = await createProcessedImage(
-						jobs[0].file,
-						batchProcessing,
-						batchCrop,
-					);
-					try {
-						const osdWorker = await createOsdWorker('osd', 1);
-						try {
-							const detectResult = await osdWorker.detect(firstPrepared.blob);
-							batchPreset = mapScriptToPreset(
-								(detectResult.data as { script?: string }).script ?? '',
-							);
-						} finally {
-							await osdWorker.terminate();
-						}
-					} finally {
-						URL.revokeObjectURL(firstPrepared.url);
-					}
-				} catch {
-					batchPreset = 'eng';
-				}
-
-				if (batchRunRef.current !== batchRun || batchRun.cancelled) {
-					return;
-				}
-			}
-
 			const batchWorkerCount = getBatchWorkerCount(jobs.length);
-			const { createScheduler, createWorker } = await import('tesseract.js');
-			const scheduler = createScheduler();
-			batchSchedulerRef.current = scheduler;
-
-			const workers = await Promise.all(
-				Array.from({ length: batchWorkerCount }, () =>
-					createWorker(batchPreset, 1),
-				),
-			);
-
-			for (const worker of workers) {
-				scheduler.addWorker(worker);
-			}
 
 			setStatus(
 				m.status_batch_running({
@@ -1328,11 +1233,16 @@ export default function OcrStudio() {
 				}
 
 				try {
-					const result = await scheduler.addJob(
-						'recognize',
-						preparedImage.blob,
-					);
-					const parsedOutput = extractOcrOutput(result.data);
+					const result = await scanPreparedImage(preparedImage, job.name);
+					const parsedOutput = {
+						text: result.text,
+						words: result.boxes.map((box) => ({
+							text: box.text,
+							confidence: null,
+							bbox: box.bbox,
+						})),
+						confidence: null,
+					};
 					const nextWordCount = parsedOutput.text.trim()
 						? parsedOutput.text.trim().split(/\s+/).length
 						: 0;
@@ -1350,13 +1260,13 @@ export default function OcrStudio() {
 								? {
 										...entry,
 										status: 'done',
-										confidence: parsedOutput.confidence,
+									confidence: parsedOutput.confidence,
 										wordCount: nextWordCount,
 										lineCount: nextLineCount,
 										text: parsedOutput.text,
 										words: parsedOutput.words,
 										snapshot: {
-											preset: batchPreset,
+										detectedLanguage: result.detectedLanguage,
 											processing: batchProcessing,
 											crop: preparedImage.crop,
 											source: job.source,
@@ -1424,17 +1334,20 @@ export default function OcrStudio() {
 			if (batchRunRef.current === batchRun && !batchRun.cancelled) {
 				setStatus(m.status_batch_done({ count: jobs.length }));
 			}
-
-			await tearDownBatchScheduler();
 		} finally {
 			batchRunRef.current = null;
 			setIsBatchRunning(false);
 			setProgress(1);
-			await tearDownBatchScheduler();
 		}
 	};
 
 	const handlePaste = useEffectEvent(async (event: ClipboardEvent) => {
+		if (compatibilityMessage) {
+			setStatus(m.compatibility_status());
+			setError(compatibilityMessage);
+			return;
+		}
+
 		const imageFiles = Array.from(event.clipboardData?.items ?? [])
 			.filter((item) => item.type.startsWith('image/'))
 			.map((item) => item.getAsFile())
@@ -1462,7 +1375,6 @@ export default function OcrStudio() {
 		}
 
 		setActiveBatchJobId(job.id);
-		setOcrPreset(job.snapshot.preset);
 		setProcessing(job.snapshot.processing);
 		setCropEnabled(Boolean(job.snapshot.crop));
 		setCropSelection(job.snapshot.crop);
@@ -1479,15 +1391,13 @@ export default function OcrStudio() {
 	});
 
 	useEffect(() => {
-		if (!ocrLangOpen) return;
-		const handle = (e: MouseEvent) => {
-			if (!ocrLangRef.current?.contains(e.target as Node)) {
-				setOcrLangOpen(false);
-			}
-		};
-		document.addEventListener('mousedown', handle);
-		return () => document.removeEventListener('mousedown', handle);
-	}, [ocrLangOpen]);
+		const issues = getCompatibilityIssues();
+		setCompatibilityIssues(issues);
+
+		if (issues.length) {
+			setStatus(m.compatibility_status());
+		}
+	}, []);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1563,6 +1473,10 @@ export default function OcrStudio() {
 	}, [activeBatchJobId, asset, batchJobs, hasHydratedBatchQueue, isBusy]);
 
 	useEffect(() => {
+		if (hasCompatibilityIssue) {
+			return;
+		}
+
 		const onPaste = (event: ClipboardEvent) => {
 			void handlePaste(event);
 		};
@@ -1572,7 +1486,7 @@ export default function OcrStudio() {
 		return () => {
 			window.removeEventListener('paste', onPaste);
 		};
-	}, []);
+	}, [hasCompatibilityIssue]);
 
 	useEffect(() => {
 		if (!asset && !processedPreview) {
@@ -1859,22 +1773,18 @@ export default function OcrStudio() {
 			}
 
 			void cancelBatchRun();
-			void tearDownBatchScheduler();
-
-			const activeWorker = workerRef.current;
-
-			if (activeWorker) {
-				workerRef.current = null;
-				void activeWorker.terminate();
-			}
 		};
-	}, [cancelBatchRun, tearDownBatchScheduler]);
+	}, [cancelBatchRun]);
 
 	useEffect(() => {
+		if (hasCompatibilityIssue) {
+			return;
+		}
+
 		if (!asset && !ocrText && !error && !isRunning) {
 			setStatus(initialStatus);
 		}
-	}, [asset, error, initialStatus, isRunning, ocrText]);
+	}, [asset, error, hasCompatibilityIssue, initialStatus, isRunning, ocrText]);
 
 	const handleCopy = async () => {
 		if (!ocrText) {
@@ -1935,27 +1845,6 @@ export default function OcrStudio() {
 		if (fileInputRef.current) {
 			fileInputRef.current.value = '';
 		}
-
-		await tearDownWorker();
-	};
-
-	const handlePresetChange = async (presetCode: OcrPresetCode) => {
-		if (presetCode === ocrPreset || isRunning) {
-			return;
-		}
-
-		setOcrPreset(presetCode);
-		setError(null);
-
-		const presetLabel = getPresetLabel(presetCode);
-
-		if (sourceFileRef.current && asset) {
-			setStatus(m.status_language_switching({ language: presetLabel }));
-			await runOcr(sourceFileRef.current, asset.source, presetCode);
-			return;
-		}
-
-		setStatus(m.status_language_selected({ language: presetLabel }));
 	};
 
 	const handleProcessingChange = <K extends keyof ProcessingSettings>(
@@ -1969,11 +1858,11 @@ export default function OcrStudio() {
 	};
 
 	const handleApplyProcessing = async () => {
-		if (!sourceFileRef.current || !asset || isBusy) {
+		if (!sourceFileRef.current || !asset || interactionDisabled) {
 			return;
 		}
 
-		await runOcr(sourceFileRef.current, asset.source, ocrPreset);
+		await runOcr(sourceFileRef.current, asset.source);
 	};
 
 	const handleResetProcessing = () => {
@@ -2182,7 +2071,7 @@ export default function OcrStudio() {
 				height: asset.height,
 			},
 			ocr: {
-				preset: lastRunSnapshot.preset,
+				detectedLanguage: lastRunSnapshot.detectedLanguage,
 				confidence,
 				words: wordCount,
 				lines: lineCount,
@@ -2305,7 +2194,7 @@ export default function OcrStudio() {
 								origin: job.source,
 							},
 							ocr: {
-								preset: job.snapshot.preset,
+								detectedLanguage: job.snapshot.detectedLanguage,
 								confidence: job.confidence,
 								words: job.wordCount,
 								lines: job.lineCount,
@@ -2367,7 +2256,6 @@ export default function OcrStudio() {
 		setActiveBatchJobId(job.id);
 
 		if (job.status === 'done' && job.snapshot) {
-			setOcrPreset(job.snapshot.preset);
 			setProcessing(job.snapshot.processing);
 			setCropEnabled(Boolean(job.snapshot.crop));
 			setCropSelection(job.snapshot.crop);
@@ -2385,7 +2273,7 @@ export default function OcrStudio() {
 		}
 
 		await replaceSourceAsset(job.file, job.source);
-		await runOcr(job.file, job.source, ocrPreset);
+		await runOcr(job.file, job.source);
 	};
 
 	const wordCount = ocrText.trim() ? ocrText.trim().split(/\s+/).length : 0;
@@ -2395,8 +2283,6 @@ export default function OcrStudio() {
 		? getContainLayout(processedStageSize, processedPreview)
 		: null;
 	const visibleWords = detectedWords.slice(0, 24);
-	const activePreset =
-		OCR_PRESETS.find((entry) => entry.code === ocrPreset) ?? OCR_PRESETS[0];
 	const selectedWord =
 		selectedWordIndex === null
 			? null
@@ -2459,12 +2345,16 @@ export default function OcrStudio() {
 						type="button"
 						onClick={() => fileInputRef.current?.click()}
 						className="action-pill compact-pill"
-						disabled={isBusy}
+						disabled={interactionDisabled}
 					>
 						<ImagePlus size={16} />
 						{m.select_image()}
 					</button>
 				</div>
+
+				{compatibilityMessage ? (
+					<p className="status-error">{compatibilityMessage}</p>
+				) : null}
 
 				<input
 					ref={fileInputRef}
@@ -2472,6 +2362,7 @@ export default function OcrStudio() {
 					multiple
 					accept="image/*"
 					className="hidden"
+					disabled={interactionDisabled}
 					onChange={(event) => {
 						void handleImageFiles(event.target.files, 'picker');
 					}}
@@ -2501,7 +2392,7 @@ export default function OcrStudio() {
 					{asset ? (
 						<>
 							<div className="preview-meta">
-								<span>{activePreset.shortLabel}</span>
+								<span>LENS</span>
 								<span>{currentSourceLabel}</span>
 								<span>{formatBytes(asset.size)}</span>
 								<span>{asset.type.replace('image/', '')}</span>
@@ -2516,7 +2407,7 @@ export default function OcrStudio() {
 											type="button"
 											onClick={() => fileInputRef.current?.click()}
 											className="action-pill ghost-pill compact-pill"
-											disabled={isBusy}
+											disabled={interactionDisabled}
 										>
 											{m.replace_image()}
 										</button>
@@ -2734,7 +2625,7 @@ export default function OcrStudio() {
 								type="button"
 								onClick={() => fileInputRef.current?.click()}
 								className="action-pill"
-								disabled={isBusy}
+								disabled={interactionDisabled}
 							>
 								<ImagePlus size={16} />
 								{m.select_image()}
@@ -2782,61 +2673,6 @@ export default function OcrStudio() {
 							{m.reset()}
 						</button>
 					</div>
-				</div>
-
-				<div ref={ocrLangRef} className="ocr-lang-select">
-					<button
-						type="button"
-						className={`toolbar-btn locale-btn ocr-lang-btn${ocrLangOpen ? ' is-active' : ''}`}
-						aria-haspopup="listbox"
-						aria-expanded={ocrLangOpen}
-						disabled={isBusy}
-						onClick={() => setOcrLangOpen((v) => !v)}
-					>
-						<span className="ocr-lang-short">
-							{OCR_PRESETS.find((p) => p.code === ocrPreset)?.shortLabel}
-						</span>
-						<span className="ocr-lang-label">{getPresetLabel(ocrPreset)}</span>
-						<svg
-							width="10"
-							height="10"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="3"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							aria-hidden="true"
-							className={`locale-arrow${ocrLangOpen ? ' open' : ''}`}
-						>
-							<polyline points="6 9 12 15 18 9" />
-						</svg>
-					</button>
-					{ocrLangOpen && (
-						<ul
-							className="locale-menu ocr-lang-menu"
-							aria-label={m.ocr_language_legend()}
-						>
-							{OCR_PRESETS.map((preset) => (
-								<li key={preset.code}>
-									<button
-										type="button"
-										className={`locale-option ocr-lang-option${ocrPreset === preset.code ? ' is-active' : ''}`}
-										aria-current={
-											ocrPreset === preset.code ? 'true' : undefined
-										}
-										onClick={() => {
-											void handlePresetChange(preset.code);
-											setOcrLangOpen(false);
-										}}
-									>
-										<span className="ocr-lang-short">{preset.shortLabel}</span>
-										{getPresetLabel(preset.code)}
-									</button>
-								</li>
-							))}
-						</ul>
-					)}
 				</div>
 
 				<div className="control-grid">
@@ -3031,7 +2867,11 @@ export default function OcrStudio() {
 						{selectedWord ? (
 							<div className="selection-card">
 								<strong>{selectedWord.text}</strong>
-								<span>{Math.round(selectedWord.confidence)}%</span>
+								<span>
+									{selectedWord.confidence === null
+										? '--'
+										: `${Math.round(selectedWord.confidence)}%`}
+								</span>
 							</div>
 						) : (
 							<p className="control-copy muted-copy">{m.overlay_empty()}</p>
@@ -3081,7 +2921,11 @@ export default function OcrStudio() {
 										className={`word-chip ${isActive ? 'is-active' : ''}`}
 									>
 										<span>{word.text}</span>
-										<small>{Math.round(word.confidence)}%</small>
+										<small>
+											{word.confidence === null
+												? '--'
+												: `${Math.round(word.confidence)}%`}
+										</small>
 									</button>
 								);
 							})}
@@ -3213,7 +3057,7 @@ export default function OcrStudio() {
 										? m.batch_stats({
 												words: job.wordCount,
 												lines: job.lineCount,
-												confidence: job.confidence ?? 0,
+												confidence: job.confidence ?? '--',
 											})
 										: job.error || m.batch_pending();
 
@@ -3246,7 +3090,9 @@ export default function OcrStudio() {
 												<div className="batch-meta">
 													<span>{getSourceLabel(job.source)}</span>
 													{job.snapshot ? (
-														<span>{getPresetLabel(job.snapshot.preset)}</span>
+														<span>
+															{getDetectedLanguageLabel(job.snapshot.detectedLanguage)}
+														</span>
 													) : null}
 												</div>
 												<p className="batch-copy">{summary}</p>
