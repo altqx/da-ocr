@@ -31,3 +31,11 @@ declare module 'chrome-lens-ocr/src/core.js' {
 		): Promise<LensResult>;
 	}
 }
+
+declare module 'chrome-lens-ocr/src/utils/proto_generated/lens_overlay_server_pb.cjs' {
+	const protoModule: {
+		default: Record<string, unknown>;
+	};
+
+	export default protoModule['default'];
+}
