@@ -1,6 +1,6 @@
 # Deadass OCR
 
-Paste a screenshot, get the text. No upload, no server round-trip — OCR runs entirely in the browser via a WASM engine ([Tesseract.js](https://tesseract.projectnaptha.com/)).
+Paste a screenshot, get the text. No upload, no server round-trip — OCR runs entirely in the browser via Chrome's Lens OCR.
 
 ## Features
 
@@ -48,7 +48,6 @@ bun --bun run check
 ## Stack
 
 - [TanStack Start](https://tanstack.com/start) + [TanStack Router](https://tanstack.com/router)
-- [Tesseract.js](https://tesseract.projectnaptha.com/) — WASM OCR engine
 - [Paraglide JS](https://inlang.com/m/gerre34r/library-inlang-paraglideJs) — i18n
 - [Tailwind CSS v4](https://tailwindcss.com/)
 - [fflate](https://github.com/101arrowz/fflate) — client-side zip export
