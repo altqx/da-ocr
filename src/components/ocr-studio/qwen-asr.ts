@@ -1,3 +1,4 @@
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
 import type { AudioTranscriptionResult } from './audio-utils';
 import {
 	QWEN_ASR_CACHE_KEY,
@@ -244,16 +245,27 @@ async function getModelData(progress?: QwenAsrProgressCallback) {
 
 async function getOrt() {
 	if (!ortModulePromise) {
-		ortModulePromise = import('onnxruntime-web/webgpu').then((ort) => {
-			ort.env.wasm.proxy = false;
-			ort.env.wasm.numThreads = Math.min(
-				4,
-				globalThis.crossOriginIsolated
-					? Math.max(1, navigator.hardwareConcurrency || 1)
-					: 1,
-			);
-			return ort;
-		});
+		ortModulePromise = import('onnxruntime-web/webgpu')
+			.then((ort) => {
+				ort.env.wasm.proxy = false;
+				ort.env.wasm.wasmPaths = {
+					wasm: ortWasmUrl,
+				};
+				ort.env.wasm.numThreads = Math.min(
+					4,
+					globalThis.crossOriginIsolated
+						? Math.max(1, navigator.hardwareConcurrency || 1)
+						: 1,
+				);
+				return ort;
+			})
+			.catch((cause) => {
+				ortModulePromise = null;
+				throw new Error(
+					'Failed to initialize ONNX Runtime WebGPU. The browser could not load the local ONNX runtime assets.',
+					{ cause },
+				);
+			});
 	}
 
 	return ortModulePromise;
@@ -264,7 +276,14 @@ async function createSessionFromData(
 	modelData: Uint8Array,
 	options?: import('onnxruntime-web').InferenceSession.SessionOptions,
 ) {
-	return ort.InferenceSession.create(modelData, options);
+	try {
+		return await ort.InferenceSession.create(modelData, options);
+	} catch (cause) {
+		throw new Error(
+			'Failed to create an ONNX Runtime WebGPU inference session. The browser could not initialize the local runtime for this model file.',
+			{ cause },
+		);
+	}
 }
 
 async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {

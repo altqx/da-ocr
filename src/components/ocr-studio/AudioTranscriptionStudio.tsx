@@ -55,8 +55,27 @@ type NavigatorWithGpu = Navigator & {
 	};
 };
 
+function getErrorMessageChain(cause: unknown) {
+	const messages: string[] = [];
+	let current: unknown = cause;
+
+	while (current instanceof Error) {
+		if (current.message && !messages.includes(current.message)) {
+			messages.push(current.message);
+		}
+
+		current = current.cause;
+	}
+
+	if (messages.length) {
+		return messages.join(' ');
+	}
+
+	return String(cause);
+}
+
 function getAsrErrorMessage(cause: unknown) {
-	const message = cause instanceof Error ? cause.message : String(cause);
+	const message = getErrorMessageChain(cause);
 
 	if (
 		/qwen3_asr|Qwen3ASR|model_fp16\.onnx|model type/i.test(message) ||
