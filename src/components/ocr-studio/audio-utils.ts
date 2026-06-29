@@ -45,7 +45,10 @@ async function waitForAudioEvent(audio: HTMLAudioElement, eventName: string) {
 }
 
 export async function readAudioAsset(file: File) {
-	const url = URL.createObjectURL(file);
+	const audioBlob = new Blob([await file.arrayBuffer()], {
+		type: file.type || 'audio',
+	});
+	const url = URL.createObjectURL(audioBlob);
 
 	try {
 		const audio = document.createElement('audio');

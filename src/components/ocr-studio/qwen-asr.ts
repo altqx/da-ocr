@@ -120,24 +120,38 @@ async function getQwenCache() {
 	return caches.open(QWEN_ASR_CACHE_KEY);
 }
 
-async function readCachedModelBlob(fileName: string) {
+async function readCachedModelData(fileName: string) {
 	const cache = await getQwenCache();
 	const cachedResponse = await cache.match(getModelFileRequest(fileName));
 
-	return cachedResponse ? cachedResponse.blob() : null;
+	return cachedResponse
+		? new Uint8Array(await cachedResponse.arrayBuffer())
+		: null;
 }
 
-async function downloadModelBlob(
+function concatenateChunks(chunks: Uint8Array[], byteLength: number) {
+	const output = new Uint8Array(byteLength);
+	let offset = 0;
+
+	for (const chunk of chunks) {
+		output.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+
+	return output;
+}
+
+async function downloadModelData(
 	file: ModelFile,
 	loadedBeforeFile: number,
 	progress?: QwenAsrProgressCallback,
 ) {
-	const cachedBlob = await readCachedModelBlob(file.name);
+	const cachedData = await readCachedModelData(file.name);
 
-	if (cachedBlob) {
+	if (cachedData) {
 		progress?.({ status: 'done', file: file.name, progress: 100 });
 		emitTotalProgress(loadedBeforeFile + file.size, progress);
-		return cachedBlob;
+		return cachedData;
 	}
 
 	progress?.({ status: 'initiate', file: file.name, progress: 0 });
@@ -150,11 +164,11 @@ async function downloadModelBlob(
 	progress?.({ status: 'download', file: file.name, progress: 0 });
 	const contentLength =
 		Number(response.headers.get('content-length')) || file.size;
-	let blob: Blob;
+	let modelData: Uint8Array;
 
 	if (response.body) {
 		const reader = response.body.getReader();
-		const chunks: BlobPart[] = [];
+		const chunks: Uint8Array[] = [];
 		let loaded = 0;
 
 		while (true) {
@@ -180,19 +194,18 @@ async function downloadModelBlob(
 			}
 		}
 
-		blob = new Blob(chunks, {
-			type: response.headers.get('content-type') ?? 'application/octet-stream',
-		});
+		modelData = concatenateChunks(chunks, loaded);
 	} else {
-		blob = await response.blob();
+		modelData = new Uint8Array(await response.arrayBuffer());
 	}
 
 	const cache = await getQwenCache();
 	await cache.put(
 		getModelFileRequest(file.name),
-		new Response(blob, {
+		new Response(modelData.slice(), {
 			headers: {
-				'content-type': blob.type || 'application/octet-stream',
+				'content-type':
+					response.headers.get('content-type') ?? 'application/octet-stream',
 				'x-da-ocr-model-file': file.name,
 			},
 		}),
@@ -200,16 +213,16 @@ async function downloadModelBlob(
 
 	progress?.({ status: 'done', file: file.name, progress: 100 });
 	emitTotalProgress(loadedBeforeFile + file.size, progress);
-	return blob;
+	return modelData;
 }
 
-async function getModelBlobs(progress?: QwenAsrProgressCallback) {
-	const entries: [string, Blob][] = [];
+async function getModelData(progress?: QwenAsrProgressCallback) {
+	const entries: [string, Uint8Array][] = [];
 	let loadedBeforeFile = 0;
 
 	for (const file of MODEL_FILES) {
-		const blob = await downloadModelBlob(file, loadedBeforeFile, progress);
-		entries.push([file.name, blob]);
+		const modelData = await downloadModelData(file, loadedBeforeFile, progress);
+		entries.push([file.name, modelData]);
 		loadedBeforeFile += file.size;
 	}
 
@@ -233,18 +246,12 @@ async function getOrt() {
 	return ortModulePromise;
 }
 
-async function createSessionFromBlob(
+async function createSessionFromData(
 	ort: OrtModule,
-	modelBlob: Blob,
+	modelData: Uint8Array,
 	options?: import('onnxruntime-web').InferenceSession.SessionOptions,
 ) {
-	const modelUrl = URL.createObjectURL(modelBlob);
-
-	try {
-		return await ort.InferenceSession.create(modelUrl, options);
-	} finally {
-		URL.revokeObjectURL(modelUrl);
-	}
+	return ort.InferenceSession.create(modelData, options);
 }
 
 async function loadTokenizer(progress?: QwenAsrProgressCallback) {
@@ -273,9 +280,9 @@ async function loadTokenizer(progress?: QwenAsrProgressCallback) {
 }
 
 async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
-	const [ort, modelBlobs, tokenizer] = await Promise.all([
+	const [ort, modelData, tokenizer] = await Promise.all([
 		getOrt(),
-		getModelBlobs(progress),
+		getModelData(progress),
 		loadTokenizer(progress),
 	]);
 	const sessionOptions = {
@@ -287,28 +294,31 @@ async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
 		externalData: [
 			{
 				path: 'decoder_weights.int4.data',
-				data: modelBlobs['decoder_weights.int4.data'],
+				data: modelData['decoder_weights.int4.data'],
 			},
 		],
 	} satisfies import('onnxruntime-web').InferenceSession.SessionOptions;
 
-	const encoder = await createSessionFromBlob(
+	const encoder = await createSessionFromData(
 		ort,
-		modelBlobs['encoder.int4.onnx'],
+		modelData['encoder.int4.onnx'],
 		sessionOptions,
 	);
-	const decoderInit = await createSessionFromBlob(
+	const decoderInit = await createSessionFromData(
 		ort,
-		modelBlobs['decoder_init.int4.onnx'],
+		modelData['decoder_init.int4.onnx'],
 		decoderSessionOptions,
 	);
-	const decoderStep = await createSessionFromBlob(
+	const decoderStep = await createSessionFromData(
 		ort,
-		modelBlobs['decoder_step.int4.onnx'],
+		modelData['decoder_step.int4.onnx'],
 		decoderSessionOptions,
 	);
+	const embedTokenData = modelData['embed_tokens.bin'];
 	const embedTokens = new Uint16Array(
-		await modelBlobs['embed_tokens.bin'].arrayBuffer(),
+		embedTokenData.buffer,
+		embedTokenData.byteOffset,
+		embedTokenData.byteLength / Uint16Array.BYTES_PER_ELEMENT,
 	);
 
 	progress?.({ status: 'ready' });
