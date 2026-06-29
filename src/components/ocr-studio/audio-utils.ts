@@ -24,52 +24,30 @@ export function isAudioSourceFile(file: File) {
 	return isAudioFile(file) || isVideoFile(file);
 }
 
-async function waitForAudioEvent(audio: HTMLAudioElement, eventName: string) {
-	await new Promise<void>((resolve, reject) => {
-		const handleEvent = () => {
-			cleanup();
-			resolve();
-		};
-		const handleError = () => {
-			cleanup();
-			reject(new Error('Failed to decode the audio file.'));
-		};
-		const cleanup = () => {
-			audio.removeEventListener(eventName, handleEvent);
-			audio.removeEventListener('error', handleError);
-		};
-
-		audio.addEventListener(eventName, handleEvent, { once: true });
-		audio.addEventListener('error', handleError, { once: true });
-	});
-}
-
 export async function readAudioAsset(file: File) {
 	const audioBlob = new Blob([await file.arrayBuffer()], {
 		type: file.type || 'audio',
 	});
+	const decodedAudio = await decodeMediaFile(
+		new File([audioBlob], file.name, { type: audioBlob.type }),
+	);
+	const monoAudio = await resampleToMono(decodedAudio);
 	const url = URL.createObjectURL(audioBlob);
 
 	try {
-		const audio = document.createElement('audio');
-		audio.preload = 'metadata';
-		audio.src = url;
-
-		await waitForAudioEvent(audio, 'loadedmetadata');
 		const asset = {
 			name: file.name,
 			size: file.size,
 			type: file.type || 'audio',
 			url,
-			duration: Number.isFinite(audio.duration) ? audio.duration : 0,
+			duration: monoAudio.duration,
+			samples: monoAudio.getChannelData(0).slice(),
 			sourceKind: 'audio',
 			originalName: file.name,
 			originalSize: file.size,
 			originalType: file.type || 'audio',
 		} satisfies AudioAsset;
 
-		audio.removeAttribute('src');
-		audio.load();
 		return asset;
 	} catch (cause) {
 		URL.revokeObjectURL(url);
@@ -157,23 +135,6 @@ async function resampleToMono(audioBuffer: AudioBuffer) {
 	return offlineContext.startRendering();
 }
 
-export async function decodeAudioUrlToMonoSamples(url: string) {
-	const response = await fetch(url);
-
-	if (!response.ok) {
-		throw new Error('Failed to load the audio source for transcription.');
-	}
-
-	const decodedAudio = await decodeMediaFile(
-		new File([await response.blob()], 'audio-source', {
-			type: response.headers.get('content-type') ?? 'audio',
-		}),
-	);
-	const monoAudio = await resampleToMono(decodedAudio);
-
-	return monoAudio.getChannelData(0).slice();
-}
-
 export async function extractAudioAssetFromVideo(file: File) {
 	const decodedAudio = await decodeMediaFile(file);
 	const monoAudio = await resampleToMono(decodedAudio);
@@ -186,6 +147,7 @@ export async function extractAudioAssetFromVideo(file: File) {
 		type: audioBlob.type,
 		url,
 		duration: monoAudio.duration,
+		samples: monoAudio.getChannelData(0).slice(),
 		sourceKind: 'video',
 		originalName: file.name,
 		originalSize: file.size,

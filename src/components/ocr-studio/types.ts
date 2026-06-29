@@ -26,6 +26,7 @@ export type AudioAsset = {
 	type: string;
 	url: string;
 	duration: number;
+	samples: Float32Array;
 	sourceKind: 'audio' | 'video';
 	originalName: string;
 	originalSize: number;

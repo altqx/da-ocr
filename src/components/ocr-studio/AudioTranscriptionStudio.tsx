@@ -385,7 +385,7 @@ export default function AudioTranscriptionStudio({
 			setAudioStatus(m.audio_status_transcribing());
 
 			const result = await transcribeWithQwenAsr(
-				audioAsset.url,
+				audioAsset.samples,
 				handleModelProgress,
 			);
 

@@ -1,5 +1,4 @@
 import type { AudioTranscriptionResult } from './audio-utils';
-import { decodeAudioUrlToMonoSamples } from './audio-utils';
 import {
 	QWEN_ASR_CACHE_KEY,
 	QWEN_ASR_MODEL_ID,
@@ -155,7 +154,16 @@ async function downloadModelData(
 	}
 
 	progress?.({ status: 'initiate', file: file.name, progress: 0 });
-	const response = await fetch(getModelFileUrl(file.name));
+	let response: Response;
+
+	try {
+		response = await fetch(getModelFileUrl(file.name));
+	} catch (cause) {
+		throw new Error(
+			`Failed to fetch ${file.name} from Hugging Face. Check the network connection and retry model loading.`,
+			{ cause },
+		);
+	}
 
 	if (!response.ok) {
 		throw new Error(`Failed to download ${file.name}: ${response.status}`);
@@ -349,12 +357,12 @@ export function resetQwenAsrPipeline() {
 }
 
 export async function transcribeWithQwenAsr(
-	audioUrl: string,
+	samples: Float32Array,
 	progress?: QwenAsrProgressCallback,
 ): Promise<AudioTranscriptionResult> {
 	const runner = await loadQwenAsrPipeline(progress);
 
-	return runner.transcribe(audioUrl, progress);
+	return runner.transcribe(samples, progress);
 }
 
 export async function getQwenAsrCacheSummary(): Promise<CacheSummary> {
@@ -460,10 +468,9 @@ class QwenAsrRunner {
 	) {}
 
 	async transcribe(
-		audioUrl: string,
+		samples: Float32Array,
 		progress?: QwenAsrProgressCallback,
 	): Promise<AudioTranscriptionResult> {
-		const samples = await decodeAudioUrlToMonoSamples(audioUrl);
 		const totalChunks = Math.max(1, Math.ceil(samples.length / CHUNK_SAMPLES));
 		const chunks: NonNullable<AudioTranscriptionResult['chunks']> = [];
 
