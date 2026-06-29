@@ -47,7 +47,7 @@ type ModelFile = {
 	size: number;
 };
 
-type ModelAsset = Uint8Array | Blob;
+type ModelAsset = Uint8Array;
 
 type MelSpectrogram = {
 	data: Float32Array;
@@ -140,20 +140,19 @@ async function readCachedModelAsset(
 	file: ModelFile,
 ): Promise<ModelAsset | null> {
 	const cache = await getQwenCache();
-	const cachedResponse = await cache.match(getModelFileRequest(file.name));
+	const request = getModelFileRequest(file.name);
+	const cachedResponse = await cache.match(request);
 
 	if (!cachedResponse) {
 		return null;
 	}
 
-	if (
-		file.name.endsWith('.data') &&
-		file.size >= RANGED_DOWNLOAD_THRESHOLD_BYTES
-	) {
-		return cachedResponse.blob();
+	try {
+		return new Uint8Array(await cachedResponse.arrayBuffer());
+	} catch {
+		await cache.delete(request);
+		return null;
 	}
-
-	return new Uint8Array(await cachedResponse.arrayBuffer());
 }
 
 function concatenateChunks(chunks: Uint8Array[], byteLength: number) {
@@ -166,6 +165,31 @@ function concatenateChunks(chunks: Uint8Array[], byteLength: number) {
 	}
 
 	return output;
+}
+
+function allocateModelBuffer(file: ModelFile) {
+	try {
+		return new Uint8Array(file.size);
+	} catch (cause) {
+		if (!(cause instanceof RangeError)) {
+			throw cause;
+		}
+
+		try {
+			const pages = Math.ceil(file.size / 65_536);
+			const memory = new WebAssembly.Memory({
+				initial: pages,
+				maximum: pages,
+			});
+
+			return new Uint8Array(memory.buffer, 0, file.size);
+		} catch (memoryCause) {
+			throw new Error(
+				`Failed to allocate ${file.size} bytes for ${file.name}. This browser may not have enough contiguous memory for the local Qwen ASR model.`,
+				{ cause: memoryCause },
+			);
+		}
+	}
 }
 
 function getChunkRanges(file: ModelFile) {
@@ -253,18 +277,39 @@ async function isChunkCached(fileName: string, start: number, end: number) {
 	return cachedBlob?.size === end - start + 1;
 }
 
-async function readCachedChunkData(
-	fileName: string,
-	start: number,
-	end: number,
-) {
-	const cachedBlob = await readCachedChunkBlob(fileName, start, end);
+async function deleteCachedChunk(fileName: string, start: number, end: number) {
+	const cache = await getQwenCache();
 
-	if (!cachedBlob || cachedBlob.size !== end - start + 1) {
+	await cache.delete(getModelChunkRequest(fileName, start, end));
+}
+
+async function readCachedChunkBytes(
+	file: ModelFile,
+	range: { start: number; end: number; size: number },
+) {
+	const cachedBlob = await readCachedChunkBlob(
+		file.name,
+		range.start,
+		range.end,
+	);
+
+	if (!cachedBlob || cachedBlob.size !== range.size) {
 		return null;
 	}
 
-	return new Uint8Array(await cachedBlob.arrayBuffer());
+	try {
+		const cachedData = new Uint8Array(await cachedBlob.arrayBuffer());
+
+		if (cachedData.byteLength !== range.size) {
+			await deleteCachedChunk(file.name, range.start, range.end);
+			return null;
+		}
+
+		return cachedData;
+	} catch {
+		await deleteCachedChunk(file.name, range.start, range.end);
+		return null;
+	}
 }
 
 async function fetchRangeChunk(
@@ -351,37 +396,17 @@ async function fetchRangeChunk(
 	);
 }
 
-async function getChunkedBlob(file: ModelFile) {
-	const parts: Blob[] = [];
-
-	for (const range of getChunkRanges(file)) {
-		const cachedBlob = await readCachedChunkBlob(
-			file.name,
-			range.start,
-			range.end,
-		);
-
-		if (!cachedBlob || cachedBlob.size !== range.size) {
-			throw new Error(
-				`Cached chunk missing for ${file.name} bytes ${range.start}-${range.end}.`,
-			);
-		}
-
-		parts.push(cachedBlob);
-	}
-
-	return new Blob(parts, { type: 'application/octet-stream' });
-}
-
 async function getChunkedData(file: ModelFile) {
-	const chunks: Uint8Array[] = [];
+	const output = allocateModelBuffer(file);
+	let offset = 0;
 
 	for (const range of getChunkRanges(file)) {
-		const cachedData = await readCachedChunkData(
-			file.name,
-			range.start,
-			range.end,
-		);
+		let cachedData = await readCachedChunkBytes(file, range);
+
+		if (!cachedData) {
+			await fetchRangeChunk(file, range.start, range.end, () => undefined);
+			cachedData = await readCachedChunkBytes(file, range);
+		}
 
 		if (!cachedData) {
 			throw new Error(
@@ -389,10 +414,11 @@ async function getChunkedData(file: ModelFile) {
 			);
 		}
 
-		chunks.push(cachedData);
+		output.set(cachedData, offset);
+		offset += cachedData.byteLength;
 	}
 
-	return concatenateChunks(chunks, file.size);
+	return output;
 }
 
 async function downloadRangedModelAsset(
@@ -433,10 +459,6 @@ async function downloadRangedModelAsset(
 
 	progress?.({ status: 'done', file: file.name, progress: 100 });
 	emitTotalProgress(loadedBeforeFile + file.size, progress);
-
-	if (file.name.endsWith('.data')) {
-		return getChunkedBlob(file);
-	}
 
 	return getChunkedData(file);
 }
@@ -568,13 +590,7 @@ function getModelBytes(
 	modelData: Record<string, ModelAsset>,
 	fileName: string,
 ) {
-	const asset = getModelAsset(modelData, fileName);
-
-	if (asset instanceof Uint8Array) {
-		return asset;
-	}
-
-	throw new Error(`${fileName} was not loaded as bytes.`);
+	return getModelAsset(modelData, fileName);
 }
 
 async function getOrt() {
