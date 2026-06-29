@@ -1,4 +1,3 @@
-import type { ProgressInfo } from '@huggingface/transformers';
 import {
 	Captions,
 	FileText,
@@ -22,6 +21,7 @@ import {
 	clearQwenAsrCache,
 	getQwenAsrCacheSummary,
 	loadQwenAsrPipeline,
+	type QwenAsrProgressInfo,
 	transcribeWithQwenAsr,
 } from './qwen-asr';
 import type { AudioAsset, AudioTimelineCue } from './types';
@@ -68,7 +68,7 @@ function getAsrErrorMessage(cause: unknown) {
 	return message || m.audio_status_failed();
 }
 
-function getProgressLabel(info: ProgressInfo) {
+function getProgressLabel(info: QwenAsrProgressInfo) {
 	switch (info.status) {
 		case 'initiate':
 			return m.audio_model_status_file_start({ file: info.file });
@@ -82,6 +82,15 @@ function getProgressLabel(info: ProgressInfo) {
 		case 'progress_total':
 			return m.audio_model_status_total_progress({
 				progress: Math.round(info.progress),
+			});
+		case 'transcribe_progress':
+			return m.audio_status_transcribing_progress({
+				progress: Math.round(info.progress),
+			});
+		case 'chunk':
+			return m.audio_status_transcribing_chunk({
+				chunk: info.chunk,
+				total: info.total,
 			});
 		case 'done':
 			return m.audio_model_status_file_done({ file: info.file });
@@ -247,7 +256,7 @@ export default function AudioTranscriptionStudio({
 		};
 	}, [audioCues]);
 
-	const handleModelProgress = (info: ProgressInfo) => {
+	const handleModelProgress = (info: QwenAsrProgressInfo) => {
 		setAudioStatus(getProgressLabel(info));
 
 		if (info.status === 'progress_total') {

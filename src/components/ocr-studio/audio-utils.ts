@@ -154,6 +154,23 @@ async function resampleToMono(audioBuffer: AudioBuffer) {
 	return offlineContext.startRendering();
 }
 
+export async function decodeAudioUrlToMonoSamples(url: string) {
+	const response = await fetch(url);
+
+	if (!response.ok) {
+		throw new Error('Failed to load the audio source for transcription.');
+	}
+
+	const decodedAudio = await decodeMediaFile(
+		new File([await response.blob()], 'audio-source', {
+			type: response.headers.get('content-type') ?? 'audio',
+		}),
+	);
+	const monoAudio = await resampleToMono(decodedAudio);
+
+	return monoAudio.getChannelData(0).slice();
+}
+
 export async function extractAudioAssetFromVideo(file: File) {
 	const decodedAudio = await decodeMediaFile(file);
 	const monoAudio = await resampleToMono(decodedAudio);
