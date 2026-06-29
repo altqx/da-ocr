@@ -9,10 +9,7 @@ type OrtModule = typeof import('onnxruntime-web/webgpu');
 type OrtTensor = import('onnxruntime-web').Tensor;
 type OrtSession = import('onnxruntime-web').InferenceSession;
 type QwenTokenizer = {
-	decode: (
-		tokens: number[],
-		options?: { skip_special_tokens?: boolean },
-	) => string;
+	decode: (tokens: number[]) => string;
 };
 
 type CacheSummary = {
@@ -71,6 +68,7 @@ const NEWLINE_TOKEN_ID = 198;
 
 const MODEL_FILES: ModelFile[] = [
 	{ name: 'config.json', size: 1_000 },
+	{ name: 'tokenizer.json', size: 11_429_377 },
 	{ name: 'encoder.int4.onnx', size: 1_270_241_779 },
 	{ name: 'decoder_init.int4.onnx', size: 356_165 },
 	{ name: 'decoder_step.int4.onnx', size: 355_662 },
@@ -174,37 +172,44 @@ async function downloadModelData(
 		Number(response.headers.get('content-length')) || file.size;
 	let modelData: Uint8Array;
 
-	if (response.body) {
-		const reader = response.body.getReader();
-		const chunks: Uint8Array[] = [];
-		let loaded = 0;
+	try {
+		if (response.body) {
+			const reader = response.body.getReader();
+			const chunks: Uint8Array[] = [];
+			let loaded = 0;
 
-		while (true) {
-			const { done, value } = await reader.read();
+			while (true) {
+				const { done, value } = await reader.read();
 
-			if (done) {
-				break;
+				if (done) {
+					break;
+				}
+
+				if (value) {
+					chunks.push(value.slice());
+					loaded += value.byteLength;
+					const fileProgress = Math.min(100, (loaded / contentLength) * 100);
+					progress?.({
+						status: 'progress',
+						file: file.name,
+						progress: fileProgress,
+					});
+					emitTotalProgress(
+						loadedBeforeFile + Math.min(loaded, file.size),
+						progress,
+					);
+				}
 			}
 
-			if (value) {
-				chunks.push(value.slice());
-				loaded += value.byteLength;
-				const fileProgress = Math.min(100, (loaded / contentLength) * 100);
-				progress?.({
-					status: 'progress',
-					file: file.name,
-					progress: fileProgress,
-				});
-				emitTotalProgress(
-					loadedBeforeFile + Math.min(loaded, file.size),
-					progress,
-				);
-			}
+			modelData = concatenateChunks(chunks, loaded);
+		} else {
+			modelData = new Uint8Array(await response.arrayBuffer());
 		}
-
-		modelData = concatenateChunks(chunks, loaded);
-	} else {
-		modelData = new Uint8Array(await response.arrayBuffer());
+	} catch (cause) {
+		throw new Error(
+			`Failed while downloading ${file.name} from Hugging Face. The browser reported a network read failure during the download.`,
+			{ cause },
+		);
 	}
 
 	const cache = await getQwenCache();
@@ -262,37 +267,12 @@ async function createSessionFromData(
 	return ort.InferenceSession.create(modelData, options);
 }
 
-async function loadTokenizer(progress?: QwenAsrProgressCallback) {
-	const { AutoTokenizer } = await import('@huggingface/transformers');
-
-	return AutoTokenizer.from_pretrained(QWEN_ASR_MODEL_ID, {
-		progress_callback: (info) => {
-			if (info.status === 'progress') {
-				progress?.({
-					status: 'progress',
-					file: info.file,
-					progress: Math.round(info.progress),
-				});
-				return;
-			}
-
-			if ('file' in info) {
-				progress?.({
-					status: info.status === 'done' ? 'done' : 'download',
-					file: info.file,
-					progress: info.status === 'done' ? 100 : 0,
-				});
-			}
-		},
-	}) as Promise<QwenTokenizer>;
-}
-
 async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
-	const [ort, modelData, tokenizer] = await Promise.all([
+	const [ort, modelData] = await Promise.all([
 		getOrt(),
 		getModelData(progress),
-		loadTokenizer(progress),
 	]);
+	const tokenizer = createQwenTokenizer(modelData['tokenizer.json']);
 	const sessionOptions = {
 		executionProviders: ['webgpu', 'wasm'],
 		graphOptimizationLevel: 'all',
@@ -529,9 +509,7 @@ class QwenAsrRunner {
 
 		const promptIds = buildPromptIds(audioTokenCount);
 		const outputTokens = await this.greedyDecode(audioFeatures, promptIds);
-		const text = this.tokenizer.decode(outputTokens, {
-			skip_special_tokens: true,
-		});
+		const text = this.tokenizer.decode(outputTokens);
 
 		disposeTensor(audioFeatures);
 		disposeTensor(melTensor);
@@ -714,6 +692,98 @@ function getAudioPadStart(promptIds: number[]) {
 	}
 
 	return index;
+}
+
+function createQwenTokenizer(tokenizerData: Uint8Array): QwenTokenizer {
+	type TokenizerJson = {
+		model?: {
+			vocab?: Record<string, number>;
+		};
+		added_tokens?: Array<{
+			id: number;
+			content: string;
+			special?: boolean;
+		}>;
+	};
+
+	const tokenizerJson = JSON.parse(
+		new TextDecoder().decode(tokenizerData),
+	) as TokenizerJson;
+	const idToToken: string[] = [];
+	const specialTokenIds = new Set<number>();
+
+	for (const [token, id] of Object.entries(tokenizerJson.model?.vocab ?? {})) {
+		idToToken[id] = token;
+	}
+
+	for (const token of tokenizerJson.added_tokens ?? []) {
+		idToToken[token.id] = token.content;
+
+		if (token.special) {
+			specialTokenIds.add(token.id);
+		}
+	}
+
+	return {
+		decode(tokens: number[]) {
+			const bytes: number[] = [];
+
+			for (const tokenId of tokens) {
+				if (specialTokenIds.has(tokenId)) {
+					continue;
+				}
+
+				const token = idToToken[tokenId];
+
+				if (!token) {
+					continue;
+				}
+
+				for (const char of token) {
+					bytes.push(byteLevelCharToByte(char));
+				}
+			}
+
+			return new TextDecoder('utf-8', { fatal: false }).decode(
+				Uint8Array.from(bytes),
+			);
+		},
+	};
+}
+
+function byteLevelCharToByte(char: string) {
+	const codePoint = char.codePointAt(0) ?? 0;
+	const visibleByteRanges = [
+		[33, 126],
+		[161, 172],
+		[174, 255],
+	] as const;
+
+	if (
+		visibleByteRanges.some(
+			([start, end]) => codePoint >= start && codePoint <= end,
+		)
+	) {
+		return codePoint;
+	}
+
+	let unicodeOffset = 256;
+
+	for (let byte = 0; byte < 256; byte += 1) {
+		const isVisibleByte = visibleByteRanges.some(
+			([start, end]) => byte >= start && byte <= end,
+		);
+
+		if (!isVisibleByte) {
+			if (codePoint === unicodeOffset) {
+				return byte;
+			}
+
+			unicodeOffset += 1;
+		}
+	}
+
+	return 0xef;
 }
 
 function computeLogMelSpectrogram(samples: Float32Array): MelSpectrogram {
