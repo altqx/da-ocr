@@ -2,13 +2,16 @@ import { useServerFn } from '@tanstack/react-start';
 import {
 	Captions,
 	Clock,
+	Crop,
 	FileText,
 	FileVideoCamera,
 	Film,
+	Focus,
 	LoaderCircle,
 	RotateCcw,
 	X,
 } from 'lucide-react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { m } from '../../i18n';
 import { runLensOcr } from '../../lib/lens-ocr';
@@ -18,7 +21,10 @@ import {
 	MIN_VIDEO_FRAME_INTERVAL,
 } from './constants';
 import type {
+	CropHandle,
+	CropSelection,
 	PreparedImage,
+	PreviewStageSize,
 	ProcessingSettings,
 	VideoAsset,
 	VideoFrameResult,
@@ -29,8 +35,13 @@ import {
 	downloadBlob,
 	downloadJson,
 	formatBytes,
+	getContainLayout,
+	normalizeCrop,
+	resizeCropSelection,
 	sanitizeBaseName,
+	translateCropSelection,
 } from './utils';
+import VideoPlayer from './VideoPlayer';
 import {
 	createLoadedVideoElement,
 	extractVideoFrame,
@@ -67,10 +78,27 @@ export default function VideoStudio({
 }: VideoStudioProps) {
 	const runLensOcrFn = useServerFn(runLensOcr);
 	const videoInputRef = useRef<HTMLInputElement>(null);
+	const videoPreviewRef = useRef<HTMLDivElement>(null);
 	const videoSourceFileRef = useRef<File | null>(null);
 	const videoUrlRef = useRef<string | null>(null);
 	const videoRunRef = useRef<{ id: number; cancelled: boolean } | null>(null);
 	const videoRunIdRef = useRef(0);
+	const videoCropDragRef = useRef<{
+		pointerId: number;
+		startX: number;
+		startY: number;
+	} | null>(null);
+	const videoCropMoveRef = useRef<{
+		pointerId: number;
+		startX: number;
+		startY: number;
+		startCrop: CropSelection;
+	} | null>(null);
+	const videoCropResizeRef = useRef<{
+		pointerId: number;
+		handle: CropHandle;
+		startCrop: CropSelection;
+	} | null>(null);
 
 	const [videoAsset, setVideoAsset] = useState<VideoAsset | null>(null);
 	const [videoFrameInterval, setVideoFrameInterval] = useState(
@@ -78,7 +106,19 @@ export default function VideoStudio({
 	);
 	const [videoFrames, setVideoFrames] = useState<VideoFrameResult[]>([]);
 	const [videoCues, setVideoCues] = useState<VideoTimelineCue[]>([]);
+	const [videoStageSize, setVideoStageSize] = useState<PreviewStageSize>({
+		width: 0,
+		height: 0,
+	});
+	const [videoCropEnabled, setVideoCropEnabled] = useState(false);
+	const [videoCropSelection, setVideoCropSelection] =
+		useState<CropSelection | null>(null);
+	const [lastVideoRunCrop, setLastVideoRunCrop] =
+		useState<CropSelection | null>(null);
 	const [isVideoDragging, setIsVideoDragging] = useState(false);
+	const [isVideoCropping, setIsVideoCropping] = useState(false);
+	const [isMovingVideoCrop, setIsMovingVideoCrop] = useState(false);
+	const [isResizingVideoCrop, setIsResizingVideoCrop] = useState(false);
 	const [videoProgress, setVideoProgress] = useState(0);
 	const [videoStatus, setVideoStatus] = useState<string>(() =>
 		m.video_status_initial(),
@@ -98,6 +138,15 @@ export default function VideoStudio({
 	const videoDurationLabel = videoAsset
 		? formatTimelineTime(videoAsset.duration)
 		: '--';
+	const videoLayout = videoAsset
+		? getContainLayout(videoStageSize, videoAsset)
+		: null;
+	const activeVideoCrop = videoCropEnabled ? videoCropSelection : null;
+	const videoCropPercentLabel = activeVideoCrop
+		? `${Math.round(activeVideoCrop.width * 100)}% x ${Math.round(
+				activeVideoCrop.height * 100,
+			)}%`
+		: null;
 	const videoStats = [
 		[
 			m.video_stat_frames(),
@@ -179,24 +228,26 @@ export default function VideoStudio({
 
 		videoSourceFileRef.current = videoFile;
 		cancelVideoRun();
-		const videoRun = {
-			id: ++videoRunIdRef.current,
-			cancelled: false,
-		};
-		videoRunRef.current = videoRun;
-		const runProcessing = { ...processing };
-		const runInterval = videoFrameInterval;
-
-		setIsVideoRunning(true);
+		const loadId = ++videoRunIdRef.current;
 		setVideoProgress(0);
 		setVideoStatus(m.video_status_loading());
 		setVideoFrames([]);
 		setVideoCues([]);
+		setLastVideoRunCrop(null);
+		setVideoCropEnabled(false);
+		setVideoCropSelection(null);
+		setVideoAsset(null);
+		setVideoStageSize({ width: 0, height: 0 });
+
+		if (videoUrlRef.current) {
+			URL.revokeObjectURL(videoUrlRef.current);
+			videoUrlRef.current = null;
+		}
 
 		try {
 			const nextAsset = await readVideoAsset(videoFile);
 
-			if (videoRunRef.current !== videoRun || videoRun.cancelled) {
+			if (loadId !== videoRunIdRef.current) {
 				URL.revokeObjectURL(nextAsset.url);
 				return;
 			}
@@ -207,8 +258,56 @@ export default function VideoStudio({
 
 			videoUrlRef.current = nextAsset.url;
 			setVideoAsset(nextAsset);
+			setVideoStatus(m.video_status_ready());
+		} catch (cause) {
+			if (loadId !== videoRunIdRef.current) {
+				return;
+			}
 
-			const sampleTimes = getVideoSampleTimes(nextAsset.duration, runInterval);
+			videoSourceFileRef.current = null;
+			const message =
+				cause instanceof Error ? cause.message : m.video_status_failed();
+			setVideoError(message);
+			setVideoStatus(m.video_status_failed());
+		}
+	};
+
+	const runVideoExtraction = async () => {
+		if (compatibilityMessage) {
+			setVideoStatus(m.compatibility_status());
+			setVideoError(compatibilityMessage);
+			return;
+		}
+
+		if (
+			!videoAsset ||
+			!videoSourceFileRef.current ||
+			isImageBusy ||
+			isVideoRunning
+		) {
+			return;
+		}
+
+		const videoFile = videoSourceFileRef.current;
+		const runAsset = videoAsset;
+		const runProcessing = { ...processing };
+		const runInterval = videoFrameInterval;
+		const runCrop = activeVideoCrop ? { ...activeVideoCrop } : null;
+		const videoRun = {
+			id: ++videoRunIdRef.current,
+			cancelled: false,
+		};
+		videoRunRef.current = videoRun;
+
+		setIsVideoRunning(true);
+		setVideoProgress(0);
+		setVideoError(null);
+		setVideoFrames([]);
+		setVideoCues([]);
+		setLastVideoRunCrop(runCrop);
+
+		try {
+			const sampleTimes = getVideoSampleTimes(runAsset.duration, runInterval);
 			let workingFrames: VideoFrameResult[] = sampleTimes.map(
 				(time, index) => ({
 					id: `${sanitizeBaseName(videoFile.name)}-${index}-${time.toFixed(2)}`,
@@ -239,10 +338,10 @@ export default function VideoStudio({
 					frame.index === frameIndex ? updater(frame) : frame,
 				);
 				setVideoFrames(workingFrames);
-				setVideoCues(getVideoTimelineCues(workingFrames, nextAsset.duration));
+				setVideoCues(getVideoTimelineCues(workingFrames, runAsset.duration));
 			};
 
-			const video = await createLoadedVideoElement(nextAsset.url);
+			const video = await createLoadedVideoElement(runAsset.url);
 
 			try {
 				for (const [index, time] of sampleTimes.entries()) {
@@ -263,7 +362,11 @@ export default function VideoStudio({
 					);
 
 					try {
-						const extractedFrame = await extractVideoFrame(video, time);
+						const extractedFrame = await extractVideoFrame(
+							video,
+							time,
+							runCrop,
+						);
 						const frameFile = new File(
 							[extractedFrame.blob],
 							`${sanitizeBaseName(videoFile.name)}-frame-${String(
@@ -336,7 +439,7 @@ export default function VideoStudio({
 				return;
 			}
 
-			const finalCues = getVideoTimelineCues(workingFrames, nextAsset.duration);
+			const finalCues = getVideoTimelineCues(workingFrames, runAsset.duration);
 			setVideoCues(finalCues);
 			setVideoStatus(
 				m.video_status_done({
@@ -362,6 +465,274 @@ export default function VideoStudio({
 		}
 	};
 
+	const getVideoPointFromClient = useCallback(
+		(clientX: number, clientY: number) => {
+			const preview = videoPreviewRef.current;
+			const layout = videoAsset
+				? getContainLayout(videoStageSize, videoAsset)
+				: null;
+
+			if (!preview || !layout) {
+				return null;
+			}
+
+			const rect = preview.getBoundingClientRect();
+			const x = clientX - rect.left - layout.left;
+			const y = clientY - rect.top - layout.top;
+
+			if (x < 0 || y < 0 || x > layout.width || y > layout.height) {
+				return null;
+			}
+
+			return {
+				x: x / layout.width,
+				y: y / layout.height,
+			};
+		},
+		[videoAsset, videoStageSize],
+	);
+
+	useEffect(() => {
+		if (!videoAsset) {
+			return;
+		}
+
+		const preview = videoPreviewRef.current;
+
+		if (!preview) {
+			return;
+		}
+
+		const updateStageSize = () => {
+			const rect = preview.getBoundingClientRect();
+			setVideoStageSize({
+				width: rect.width,
+				height: rect.height,
+			});
+		};
+		const resizeObserver = new ResizeObserver((entries) => {
+			const entry = entries[0];
+
+			if (!entry) {
+				return;
+			}
+
+			setVideoStageSize({
+				width: entry.contentRect.width,
+				height: entry.contentRect.height,
+			});
+		});
+
+		updateStageSize();
+		resizeObserver.observe(preview);
+
+		return () => {
+			resizeObserver.disconnect();
+		};
+	}, [videoAsset]);
+
+	useEffect(() => {
+		if (!isMovingVideoCrop) {
+			return;
+		}
+
+		const handlePointerMove = (event: PointerEvent) => {
+			const activeMove = videoCropMoveRef.current;
+
+			if (!activeMove || activeMove.pointerId !== event.pointerId) {
+				return;
+			}
+
+			const point = getVideoPointFromClient(event.clientX, event.clientY);
+
+			if (!point) {
+				return;
+			}
+
+			setVideoCropSelection(
+				translateCropSelection(
+					activeMove.startCrop,
+					point.x - activeMove.startX,
+					point.y - activeMove.startY,
+				),
+			);
+		};
+
+		const handlePointerEnd = () => {
+			videoCropMoveRef.current = null;
+			setIsMovingVideoCrop(false);
+		};
+
+		window.addEventListener('pointermove', handlePointerMove);
+		window.addEventListener('pointerup', handlePointerEnd);
+		window.addEventListener('pointercancel', handlePointerEnd);
+
+		return () => {
+			window.removeEventListener('pointermove', handlePointerMove);
+			window.removeEventListener('pointerup', handlePointerEnd);
+			window.removeEventListener('pointercancel', handlePointerEnd);
+		};
+	}, [getVideoPointFromClient, isMovingVideoCrop]);
+
+	useEffect(() => {
+		if (!isResizingVideoCrop) {
+			return;
+		}
+
+		const handlePointerMove = (event: PointerEvent) => {
+			const activeResize = videoCropResizeRef.current;
+
+			if (!activeResize || activeResize.pointerId !== event.pointerId) {
+				return;
+			}
+
+			const point = getVideoPointFromClient(event.clientX, event.clientY);
+
+			if (!point) {
+				return;
+			}
+
+			setVideoCropSelection(
+				resizeCropSelection(
+					activeResize.startCrop,
+					activeResize.handle,
+					point.x,
+					point.y,
+				),
+			);
+		};
+
+		const handlePointerEnd = () => {
+			videoCropResizeRef.current = null;
+			setIsResizingVideoCrop(false);
+		};
+
+		window.addEventListener('pointermove', handlePointerMove);
+		window.addEventListener('pointerup', handlePointerEnd);
+		window.addEventListener('pointercancel', handlePointerEnd);
+
+		return () => {
+			window.removeEventListener('pointermove', handlePointerMove);
+			window.removeEventListener('pointerup', handlePointerEnd);
+			window.removeEventListener('pointercancel', handlePointerEnd);
+		};
+	}, [getVideoPointFromClient, isResizingVideoCrop]);
+
+	const getVideoPointerPoint = (event: ReactPointerEvent<HTMLDivElement>) =>
+		getVideoPointFromClient(event.clientX, event.clientY);
+
+	const handleVideoCropPointerDown = (
+		event: ReactPointerEvent<HTMLDivElement>,
+	) => {
+		if (
+			!videoCropEnabled ||
+			!videoAsset ||
+			isVideoRunning ||
+			isMovingVideoCrop ||
+			isResizingVideoCrop
+		) {
+			return;
+		}
+
+		const point = getVideoPointerPoint(event);
+
+		if (!point) {
+			return;
+		}
+
+		event.preventDefault();
+		event.currentTarget.setPointerCapture(event.pointerId);
+		videoCropDragRef.current = {
+			pointerId: event.pointerId,
+			startX: point.x,
+			startY: point.y,
+		};
+		setIsVideoCropping(true);
+		setVideoCropSelection({
+			left: point.x,
+			top: point.y,
+			width: 0,
+			height: 0,
+		});
+	};
+
+	const handleVideoCropPointerMove = (
+		event: ReactPointerEvent<HTMLDivElement>,
+	) => {
+		const activeDrag = videoCropDragRef.current;
+
+		if (!activeDrag || activeDrag.pointerId !== event.pointerId) {
+			return;
+		}
+
+		const point = getVideoPointerPoint(event);
+
+		if (!point) {
+			return;
+		}
+
+		setVideoCropSelection(
+			normalizeCrop(activeDrag.startX, activeDrag.startY, point.x, point.y),
+		);
+	};
+
+	const finishVideoCropDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+		const activeDrag = videoCropDragRef.current;
+
+		if (!activeDrag || activeDrag.pointerId !== event.pointerId) {
+			return;
+		}
+
+		if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+			event.currentTarget.releasePointerCapture(event.pointerId);
+		}
+
+		videoCropDragRef.current = null;
+		setIsVideoCropping(false);
+	};
+
+	const handleVideoCropMovePointerDown = (
+		event: ReactPointerEvent<HTMLDivElement>,
+	) => {
+		if (!videoCropSelection || !videoCropEnabled || isVideoRunning) {
+			return;
+		}
+
+		const point = getVideoPointerPoint(event);
+
+		if (!point) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		videoCropMoveRef.current = {
+			pointerId: event.pointerId,
+			startX: point.x,
+			startY: point.y,
+			startCrop: videoCropSelection,
+		};
+		setIsMovingVideoCrop(true);
+	};
+
+	const handleVideoCropHandlePointerDown = (
+		handle: CropHandle,
+		event: ReactPointerEvent<HTMLButtonElement>,
+	) => {
+		if (!videoCropSelection || !videoCropEnabled || isVideoRunning) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		videoCropResizeRef.current = {
+			pointerId: event.pointerId,
+			handle,
+			startCrop: videoCropSelection,
+		};
+		setIsResizingVideoCrop(true);
+	};
+
 	const handleVideoReset = () => {
 		cancelVideoRun();
 		videoRunIdRef.current += 1;
@@ -369,10 +740,17 @@ export default function VideoStudio({
 		setVideoAsset(null);
 		setVideoFrames([]);
 		setVideoCues([]);
+		setLastVideoRunCrop(null);
+		setVideoCropEnabled(false);
+		setVideoCropSelection(null);
+		setVideoStageSize({ width: 0, height: 0 });
 		setVideoProgress(0);
 		setVideoStatus(m.video_status_initial());
 		setVideoError(null);
 		setIsVideoDragging(false);
+		setIsVideoCropping(false);
+		setIsMovingVideoCrop(false);
+		setIsResizingVideoCrop(false);
 		setIsVideoRunning(false);
 
 		if (videoUrlRef.current) {
@@ -395,7 +773,7 @@ export default function VideoStudio({
 			return;
 		}
 
-		await handleVideoFiles([videoSourceFileRef.current]);
+		await runVideoExtraction();
 	};
 
 	const handleExportVideoSrt = () => {
@@ -427,6 +805,7 @@ export default function VideoStudio({
 				duration: videoAsset.duration,
 			},
 			frameInterval: videoFrameInterval,
+			ocrArea: lastVideoRunCrop,
 			frames: videoFrames.map((frame) => ({
 				index: frame.index,
 				time: frame.time,
@@ -537,22 +916,22 @@ export default function VideoStudio({
 								<span>{formatBytes(videoAsset.size)}</span>
 								<span>{videoDurationLabel}</span>
 							</div>
-							<div className="video-preview-wrap">
-								<video
-									src={videoAsset.url}
-									className="video-preview"
-									controls
-									preload="metadata"
-									playsInline
-								>
-									<track
-										kind="captions"
-										label={m.video_generated_captions_label()}
-										src={videoSubtitleUrl ?? 'data:text/vtt,WEBVTT%0A%0A'}
-										default={Boolean(videoSubtitleUrl)}
-									/>
-								</video>
-							</div>
+							<VideoPlayer
+								ref={videoPreviewRef}
+								asset={videoAsset}
+								subtitleUrl={videoSubtitleUrl}
+								cropEnabled={videoCropEnabled}
+								videoLayout={videoLayout}
+								cropSelection={videoCropSelection}
+								isVideoCropping={isVideoCropping}
+								isMovingVideoCrop={isMovingVideoCrop}
+								onPreviewPointerDown={handleVideoCropPointerDown}
+								onPreviewPointerMove={handleVideoCropPointerMove}
+								onPreviewPointerUp={finishVideoCropDrag}
+								onPreviewPointerCancel={finishVideoCropDrag}
+								onCropMovePointerDown={handleVideoCropMovePointerDown}
+								onCropHandlePointerDown={handleVideoCropHandlePointerDown}
+							/>
 							<div className="preview-footer">
 								<strong>{videoAsset.name}</strong>
 								<span>
@@ -561,6 +940,57 @@ export default function VideoStudio({
 							</div>
 
 							<div className="control-grid">
+								<section className="control-card">
+									<div className="control-head">
+										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+											{m.video_focus_title()}
+										</h3>
+										<Focus size={16} />
+									</div>
+
+									<div className="video-focus-readout">
+										<span>
+											{activeVideoCrop
+												? m.video_focus_selected()
+												: m.video_focus_full_frame()}
+										</span>
+										{videoCropPercentLabel ? (
+											<strong>{videoCropPercentLabel}</strong>
+										) : null}
+									</div>
+
+									<div className="control-actions">
+										<button
+											type="button"
+											onClick={() => {
+												setVideoCropEnabled(true);
+											}}
+											className="action-pill compact-pill"
+											disabled={!videoAsset || isVideoRunning}
+											aria-pressed={videoCropEnabled}
+										>
+											<Crop size={16} />
+											{m.video_focus_select()}
+										</button>
+										<button
+											type="button"
+											onClick={() => {
+												setVideoCropEnabled(false);
+												setVideoCropSelection(null);
+											}}
+											className="action-pill ghost-pill compact-pill"
+											disabled={
+												!videoAsset ||
+												isVideoRunning ||
+												(!videoCropEnabled && !videoCropSelection)
+											}
+										>
+											<X size={16} />
+											{m.video_focus_clear()}
+										</button>
+									</div>
+								</section>
+
 								<section className="control-card">
 									<div className="control-head">
 										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
@@ -597,6 +1027,7 @@ export default function VideoStudio({
 											className="action-pill compact-pill"
 											disabled={!videoAsset || isImageBusy || isVideoRunning}
 										>
+											<Captions size={16} />
 											{m.video_extract()}
 										</button>
 										<button

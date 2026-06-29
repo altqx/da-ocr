@@ -1,12 +1,13 @@
 import { m } from '../../i18n';
 import { MAX_VIDEO_FRAMES, VIDEO_FRAME_MAX_EDGE } from './constants';
 import type {
+	CropSelection,
 	VideoAsset,
 	VideoFrameResult,
 	VideoFrameStatus,
 	VideoTimelineCue,
 } from './types';
-import { clamp } from './utils';
+import { clamp, getCropPixels } from './utils';
 
 export function isVideoFile(file: File) {
 	return (
@@ -227,7 +228,11 @@ async function seekVideoFrame(video: HTMLVideoElement, time: number) {
 	await seekPromise;
 }
 
-export async function extractVideoFrame(video: HTMLVideoElement, time: number) {
+export async function extractVideoFrame(
+	video: HTMLVideoElement,
+	time: number,
+	crop: CropSelection | null = null,
+) {
 	if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
 		await waitForVideoEvent(video, 'loadeddata');
 	}
@@ -236,14 +241,22 @@ export async function extractVideoFrame(video: HTMLVideoElement, time: number) {
 
 	const sourceWidth = video.videoWidth;
 	const sourceHeight = video.videoHeight;
+	const cropPixels = getCropPixels(crop, {
+		width: sourceWidth,
+		height: sourceHeight,
+	});
+	const sourceX = cropPixels?.x ?? 0;
+	const sourceY = cropPixels?.y ?? 0;
+	const frameWidth = cropPixels?.width ?? sourceWidth;
+	const frameHeight = cropPixels?.height ?? sourceHeight;
 	const scale = Math.min(
-		VIDEO_FRAME_MAX_EDGE / sourceWidth,
-		VIDEO_FRAME_MAX_EDGE / sourceHeight,
+		VIDEO_FRAME_MAX_EDGE / frameWidth,
+		VIDEO_FRAME_MAX_EDGE / frameHeight,
 		1,
 	);
 	const canvas = document.createElement('canvas');
-	canvas.width = Math.max(1, Math.round(sourceWidth * scale));
-	canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+	canvas.width = Math.max(1, Math.round(frameWidth * scale));
+	canvas.height = Math.max(1, Math.round(frameHeight * scale));
 
 	const context = canvas.getContext('2d');
 
@@ -253,7 +266,17 @@ export async function extractVideoFrame(video: HTMLVideoElement, time: number) {
 		);
 	}
 
-	context.drawImage(video, 0, 0, canvas.width, canvas.height);
+	context.drawImage(
+		video,
+		sourceX,
+		sourceY,
+		frameWidth,
+		frameHeight,
+		0,
+		0,
+		canvas.width,
+		canvas.height,
+	);
 	const thumbnailDataUrl = canvas.toDataURL('image/jpeg', 0.72);
 	const blob = await new Promise<Blob>((resolve, reject) => {
 		canvas.toBlob((value) => {
