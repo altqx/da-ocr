@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router';
-import { Github } from 'lucide-react';
 import { m } from '../i18n';
+import GithubMark from './GithubMark';
 import ParaglideLocaleSwitcher from './LocaleSwitcher.tsx';
 import ThemeToggle from './ThemeToggle';
 
@@ -34,7 +34,7 @@ export default function Header() {
 						aria-label={m.sr_go_github()}
 						className="border-l-3 border-[var(--border)] flex items-center px-3 py-2.5 text-[var(--ink-soft)] hover:text-[var(--ink)] transition-colors"
 					>
-						<Github size={16} />
+						<GithubMark size={16} />
 					</a>
 				</div>
 			</nav>

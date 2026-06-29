@@ -1,5 +1,5 @@
-import { Github } from 'lucide-react';
 import { m } from '../i18n';
+import GithubMark from './GithubMark';
 
 export default function Footer() {
 	const year = new Date().getFullYear();
@@ -16,7 +16,7 @@ export default function Footer() {
 						aria-label={m.sr_go_github()}
 						className="flex items-center gap-1.5 text-[var(--ink-soft)] hover:text-[var(--ink)] transition-colors no-underline"
 					>
-						<Github size={12} />
+						<GithubMark size={12} />
 						<span>GitHub</span>
 					</a>
 					<p className="m-0 flex items-center gap-1.5">
