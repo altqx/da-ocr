@@ -28,751 +28,61 @@ import {
 } from 'react';
 import { m } from '../i18n';
 import { runLensOcr } from '../lib/lens-ocr';
+import {
+	DEFAULT_PREVIEW_TRANSFORM,
+	DEFAULT_PROCESSING,
+	MAX_PREVIEW_SCALE,
+	MIN_PREVIEW_SCALE,
+	PREVIEW_SCALE_STEP,
+} from './ocr-studio/constants';
+import ModeTabs from './ocr-studio/ModeTabs';
+import type {
+	BatchJob,
+	CompatibilityFeature,
+	CropHandle,
+	CropSelection,
+	DetectedWord,
+	ImageAsset,
+	OcrExecutionResult,
+	OcrRunSnapshot,
+	PreparedImage,
+	PreviewStageSize,
+	PreviewSurfaceKey,
+	PreviewTransform,
+	ProcessingSettings,
+	StudioMode,
+} from './ocr-studio/types';
+import {
+	clamp,
+	clampPreviewTransform,
+	clearPersistedBatchQueue,
+	createProcessedImage,
+	createThumbnailDataUrl,
+	downloadBlob,
+	downloadJson,
+	formatBytes,
+	getBatchQueuePayload,
+	getBatchStatusLabel,
+	getBatchWorkerCount,
+	getCompatibilityFeatureLabel,
+	getCompatibilityIssues,
+	getContainLayout,
+	getCropPixels,
+	getDetectedLanguageLabel,
+	getRunSignature,
+	getSourceLabel,
+	getWordBoxesCsv,
+	getWordKey,
+	normalizeCrop,
+	readImageAsset,
+	readPersistedBatchQueue,
+	resizeCropSelection,
+	sanitizeBaseName,
+	translateCropSelection,
+	writePersistedBatchQueue,
+} from './ocr-studio/utils';
+import VideoStudio from './ocr-studio/VideoStudio';
 
-type ImageAsset = {
-	name: string;
-	size: number;
-	type: string;
-	url: string;
-	width: number;
-	height: number;
-	source: 'paste' | 'picker' | 'drop';
-};
-
-type CropSelection = {
-	left: number;
-	top: number;
-	width: number;
-	height: number;
-};
-
-type CropHandle = 'nw' | 'ne' | 'sw' | 'se';
-
-type DetectedWord = {
-	text: string;
-	confidence: number | null;
-	bbox: {
-		x0: number;
-		y0: number;
-		x1: number;
-		y1: number;
-	};
-};
-
-type ProcessingSettings = {
-	grayscale: boolean;
-	thresholdEnabled: boolean;
-	threshold: number;
-	contrast: number;
-};
-
-type PreviewStageSize = {
-	width: number;
-	height: number;
-};
-
-type PreparedImage = {
-	blob: Blob;
-	url: string;
-	width: number;
-	height: number;
-	crop: CropSelection | null;
-};
-
-type OcrRunSnapshot = {
-	detectedLanguage: string | null;
-	processing: ProcessingSettings;
-	crop: CropSelection | null;
-	source: ImageAsset['source'];
-	processedWidth: number;
-	processedHeight: number;
-	signature: string;
-};
-
-type BatchJobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
-
-type PreviewSurfaceKey = 'raw' | 'processed';
-
-type PreviewTransform = {
-	scale: number;
-	x: number;
-	y: number;
-};
-
-type BatchJob = {
-	id: string;
-	file: File;
-	name: string;
-	thumbnailDataUrl: string | null;
-	source: ImageAsset['source'];
-	status: BatchJobStatus;
-	confidence: number | null;
-	wordCount: number;
-	lineCount: number;
-	text: string;
-	words: DetectedWord[];
-	snapshot: OcrRunSnapshot | null;
-	error: string | null;
-};
-
-type OcrExecutionResult =
-	| {
-			ok: true;
-			text: string;
-			words: DetectedWord[];
-			confidence: number | null;
-			snapshot: OcrRunSnapshot;
-	  }
-	| {
-			ok: false;
-			error: string;
-	  }
-	| null;
-
-type PersistedBatchQueue = {
-	version: 1;
-	activeBatchJobId: string | null;
-	jobs: BatchJob[];
-};
-
-type CompatibilityFeature =
-	| 'canvas-to-blob'
-	| 'create-image-bitmap'
-	| 'file-api'
-	| 'form-data'
-	| 'resize-observer';
-
-const DEFAULT_PROCESSING: ProcessingSettings = {
-	grayscale: false,
-	thresholdEnabled: false,
-	threshold: 155,
-	contrast: 0,
-};
-const MIN_CROP_RATIO = 0.01;
-const MIN_BATCH_WORKERS = 2;
-const MAX_BATCH_WORKERS = 4;
-const MIN_PREVIEW_SCALE = 1;
-const MAX_PREVIEW_SCALE = 4;
-const PREVIEW_SCALE_STEP = 0.2;
-const DEFAULT_PREVIEW_TRANSFORM: PreviewTransform = {
-	scale: 1,
-	x: 0,
-	y: 0,
-};
-const BATCH_QUEUE_DB_NAME = 'da-ocr';
-const BATCH_QUEUE_STORE_NAME = 'state';
-const BATCH_QUEUE_STORAGE_KEY = 'batch-queue';
-
-function getCompatibilityIssues(): CompatibilityFeature[] {
-	if (typeof window === 'undefined') {
-		return [];
-	}
-
-	const issues: CompatibilityFeature[] = [];
-
-	if (typeof createImageBitmap !== 'function') {
-		issues.push('create-image-bitmap');
-	}
-
-	if (typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.toBlob) {
-		issues.push('canvas-to-blob');
-	}
-
-	if (
-		typeof File !== 'function' ||
-		typeof URL === 'undefined' ||
-		typeof URL.createObjectURL !== 'function'
-	) {
-		issues.push('file-api');
-	}
-
-	if (typeof FormData !== 'function') {
-		issues.push('form-data');
-	}
-
-	if (typeof ResizeObserver === 'undefined') {
-		issues.push('resize-observer');
-	}
-
-	return issues;
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-	return Math.min(maximum, Math.max(minimum, value));
-}
-
-function formatBytes(size: number) {
-	if (size < 1024 * 1024) {
-		return `${Math.max(1, Math.round(size / 1024))} KB`;
-	}
-
-	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function getDetectedLanguageLabel(language: string | null) {
-	if (!language) {
-		return 'Lens';
-	}
-
-	switch (language.toLowerCase()) {
-		case 'de':
-			return 'DE';
-		case 'en':
-			return 'EN';
-		case 'ja':
-			return 'JA';
-		case 'jp':
-			return 'JA';
-		case 'th':
-			return 'TH';
-		default:
-			return language.toUpperCase();
-	}
-}
-
-function getCompatibilityFeatureLabel(feature: CompatibilityFeature) {
-	switch (feature) {
-		case 'canvas-to-blob':
-			return m.compatibility_feature_canvas_to_blob();
-		case 'create-image-bitmap':
-			return m.compatibility_feature_create_image_bitmap();
-		case 'file-api':
-			return m.compatibility_feature_file_api();
-		case 'form-data':
-			return m.compatibility_feature_form_data();
-		default:
-			return m.compatibility_feature_resize_observer();
-	}
-}
-
-function getSourceLabel(source: ImageAsset['source']) {
-	switch (source) {
-		case 'picker':
-			return m.source_picker();
-		case 'drop':
-			return m.source_drop();
-		default:
-			return m.source_paste();
-	}
-}
-
-function applyContrast(value: number, contrast: number) {
-	if (contrast === 0) {
-		return value;
-	}
-
-	const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-	return Math.max(0, Math.min(255, factor * (value - 128) + 128));
-}
-
-function sanitizeBaseName(name: string) {
-	return (
-		name
-			.replace(/\.[^.]+$/, '')
-			.replace(/[^a-z0-9-_]+/gi, '-')
-			.replace(/-+/g, '-')
-			.replace(/^-|-$/g, '')
-			.toLowerCase() || 'ocr-result'
-	);
-}
-
-function getWordKey(word: DetectedWord) {
-	return `${word.text}-${word.bbox.x0}-${word.bbox.y0}-${word.bbox.x1}-${word.bbox.y1}`;
-}
-
-function getRunSignature(
-	processing: ProcessingSettings,
-	crop: CropSelection | null,
-) {
-	return JSON.stringify({ processing, crop });
-}
-
-function translateCropSelection(
-	crop: CropSelection,
-	deltaX: number,
-	deltaY: number,
-) {
-	const maxLeft = 1 - crop.width;
-	const maxTop = 1 - crop.height;
-
-	return {
-		left: clamp(crop.left + deltaX, 0, maxLeft),
-		top: clamp(crop.top + deltaY, 0, maxTop),
-		width: crop.width,
-		height: crop.height,
-	};
-}
-
-function resizeCropSelection(
-	crop: CropSelection,
-	handle: CropHandle,
-	pointX: number,
-	pointY: number,
-) {
-	let left = crop.left;
-	let top = crop.top;
-	let right = crop.left + crop.width;
-	let bottom = crop.top + crop.height;
-
-	switch (handle) {
-		case 'nw':
-			left = pointX;
-			top = pointY;
-			break;
-		case 'ne':
-			right = pointX;
-			top = pointY;
-			break;
-		case 'sw':
-			left = pointX;
-			bottom = pointY;
-			break;
-		case 'se':
-			right = pointX;
-			bottom = pointY;
-			break;
-	}
-
-	return normalizeCrop(
-		clamp(left, 0, 1),
-		clamp(top, 0, 1),
-		clamp(right, 0, 1),
-		clamp(bottom, 0, 1),
-	);
-}
-
-function getBatchStatusLabel(status: BatchJobStatus) {
-	switch (status) {
-		case 'cancelled':
-			return m.batch_status_cancelled();
-		case 'running':
-			return m.batch_status_running();
-		case 'done':
-			return m.batch_status_done();
-		case 'error':
-			return m.batch_status_error();
-		default:
-			return m.batch_status_queued();
-	}
-}
-
-function clampPreviewTransform(
-	transform: PreviewTransform,
-	stage: PreviewStageSize,
-) {
-	const scale = clamp(transform.scale, MIN_PREVIEW_SCALE, MAX_PREVIEW_SCALE);
-
-	if (!stage.width || !stage.height || scale <= 1) {
-		return {
-			scale,
-			x: 0,
-			y: 0,
-		};
-	}
-
-	const maxX = (stage.width * scale - stage.width) / 2;
-	const maxY = (stage.height * scale - stage.height) / 2;
-
-	return {
-		scale,
-		x: clamp(transform.x, -maxX, maxX),
-		y: clamp(transform.y, -maxY, maxY),
-	};
-}
-
-function getWordBoxesCsv(words: DetectedWord[]) {
-	return [
-		['text', 'confidence', 'x0', 'y0', 'x1', 'y1'].join(','),
-		...words.map((word) =>
-			[
-				JSON.stringify(word.text),
-				word.confidence === null ? '' : word.confidence.toFixed(2),
-				word.bbox.x0,
-				word.bbox.y0,
-				word.bbox.x1,
-				word.bbox.y1,
-			].join(','),
-		),
-	].join('\n');
-}
-
-function getBatchWorkerCount(jobCount: number) {
-	const availableCores =
-		typeof navigator === 'undefined' ? 2 : (navigator.hardwareConcurrency ?? 2);
-	return clamp(
-		Math.min(
-			jobCount,
-			Math.max(MIN_BATCH_WORKERS, Math.floor(availableCores / 2)),
-		),
-		1,
-		MAX_BATCH_WORKERS,
-	);
-}
-
-function openBatchQueueDatabase() {
-	return new Promise<IDBDatabase>((resolve, reject) => {
-		if (typeof indexedDB === 'undefined') {
-			reject(new Error('IndexedDB is not available in this browser.'));
-			return;
-		}
-
-		const request = indexedDB.open(BATCH_QUEUE_DB_NAME, 1);
-
-		request.onupgradeneeded = () => {
-			const database = request.result;
-
-			if (!database.objectStoreNames.contains(BATCH_QUEUE_STORE_NAME)) {
-				database.createObjectStore(BATCH_QUEUE_STORE_NAME);
-			}
-		};
-
-		request.onsuccess = () => {
-			resolve(request.result);
-		};
-
-		request.onerror = () => {
-			reject(request.error ?? new Error('Failed to open IndexedDB.'));
-		};
-	});
-}
-
-function getBatchQueuePayload(
-	batchJobs: BatchJob[],
-	activeBatchJobId: string | null,
-): PersistedBatchQueue {
-	return {
-		version: 1,
-		activeBatchJobId,
-		jobs: batchJobs.map((job) => ({
-			...job,
-			status: job.status === 'running' ? 'queued' : job.status,
-			error: job.status === 'running' ? null : job.error,
-		})),
-	};
-}
-
-async function readPersistedBatchQueue() {
-	const database = await openBatchQueueDatabase();
-
-	try {
-		return await new Promise<PersistedBatchQueue | null>((resolve, reject) => {
-			const transaction = database.transaction(
-				BATCH_QUEUE_STORE_NAME,
-				'readonly',
-			);
-			const store = transaction.objectStore(BATCH_QUEUE_STORE_NAME);
-			const request = store.get(BATCH_QUEUE_STORAGE_KEY);
-
-			request.onsuccess = () => {
-				resolve((request.result as PersistedBatchQueue | undefined) ?? null);
-			};
-
-			request.onerror = () => {
-				reject(request.error ?? new Error('Failed to read saved batch queue.'));
-			};
-		});
-	} finally {
-		database.close();
-	}
-}
-
-async function writePersistedBatchQueue(payload: PersistedBatchQueue) {
-	const database = await openBatchQueueDatabase();
-
-	try {
-		await new Promise<void>((resolve, reject) => {
-			const transaction = database.transaction(
-				BATCH_QUEUE_STORE_NAME,
-				'readwrite',
-			);
-			const store = transaction.objectStore(BATCH_QUEUE_STORE_NAME);
-			const request = store.put(payload, BATCH_QUEUE_STORAGE_KEY);
-
-			request.onerror = () => {
-				reject(request.error ?? new Error('Failed to persist batch queue.'));
-			};
-
-			transaction.oncomplete = () => {
-				resolve();
-			};
-
-			transaction.onerror = () => {
-				reject(
-					transaction.error ?? new Error('Failed to persist batch queue.'),
-				);
-			};
-		});
-	} finally {
-		database.close();
-	}
-}
-
-async function clearPersistedBatchQueue() {
-	const database = await openBatchQueueDatabase();
-
-	try {
-		await new Promise<void>((resolve, reject) => {
-			const transaction = database.transaction(
-				BATCH_QUEUE_STORE_NAME,
-				'readwrite',
-			);
-			const store = transaction.objectStore(BATCH_QUEUE_STORE_NAME);
-			const request = store.delete(BATCH_QUEUE_STORAGE_KEY);
-
-			request.onerror = () => {
-				reject(
-					request.error ?? new Error('Failed to clear saved batch queue.'),
-				);
-			};
-
-			transaction.oncomplete = () => {
-				resolve();
-			};
-
-			transaction.onerror = () => {
-				reject(
-					transaction.error ?? new Error('Failed to clear saved batch queue.'),
-				);
-			};
-		});
-	} finally {
-		database.close();
-	}
-}
-
-async function createThumbnailDataUrl(file: File) {
-	const bitmap = await createImageBitmap(file);
-
-	try {
-		const maxEdge = 152;
-		const scale = Math.min(maxEdge / bitmap.width, maxEdge / bitmap.height, 1);
-		const canvas = document.createElement('canvas');
-		canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-		canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-
-		const context = canvas.getContext('2d');
-
-		if (!context) {
-			return null;
-		}
-
-		context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-		return canvas.toDataURL('image/jpeg', 0.82);
-	} finally {
-		bitmap.close();
-	}
-}
-
-function getCropPixels(
-	crop: CropSelection | null,
-	image: Pick<ImageAsset, 'width' | 'height'>,
-) {
-	if (!crop) {
-		return null;
-	}
-
-	const width = Math.round(crop.width * image.width);
-	const height = Math.round(crop.height * image.height);
-
-	if (width < 2 || height < 2) {
-		return null;
-	}
-
-	const x = Math.round(crop.left * image.width);
-	const y = Math.round(crop.top * image.height);
-
-	return {
-		x: clamp(x, 0, Math.max(0, image.width - width)),
-		y: clamp(y, 0, Math.max(0, image.height - height)),
-		width: clamp(width, 1, image.width),
-		height: clamp(height, 1, image.height),
-	};
-}
-
-function normalizeCrop(
-	startX: number,
-	startY: number,
-	endX: number,
-	endY: number,
-) {
-	const left = Math.min(startX, endX);
-	const top = Math.min(startY, endY);
-	const width = Math.abs(endX - startX);
-	const height = Math.abs(endY - startY);
-
-	if (width < MIN_CROP_RATIO || height < MIN_CROP_RATIO) {
-		return null;
-	}
-
-	return {
-		left,
-		top,
-		width,
-		height,
-	};
-}
-
-function downloadBlob(filename: string, blob: Blob) {
-	const url = URL.createObjectURL(blob);
-	const anchor = document.createElement('a');
-	anchor.href = url;
-	anchor.download = filename;
-	anchor.click();
-	window.setTimeout(() => {
-		URL.revokeObjectURL(url);
-	}, 0);
-}
-
-function downloadJson(filename: string, value: unknown) {
-	downloadBlob(
-		filename,
-		new Blob([JSON.stringify(value, null, 2)], {
-			type: 'application/json;charset=utf-8',
-		}),
-	);
-}
-
-async function readImageAsset(file: File, source: ImageAsset['source']) {
-	const bitmap = await createImageBitmap(file);
-	const asset = {
-		name: file.name,
-		size: file.size,
-		type: file.type || 'image',
-		url: URL.createObjectURL(file),
-		width: bitmap.width,
-		height: bitmap.height,
-		source,
-	} satisfies ImageAsset;
-	bitmap.close();
-	return asset;
-}
-
-async function createProcessedImage(
-	file: File,
-	settings: ProcessingSettings,
-	crop: CropSelection | null,
-) {
-	const bitmap = await createImageBitmap(file);
-	const cropPixels = getCropPixels(crop, {
-		width: bitmap.width,
-		height: bitmap.height,
-	});
-	const sourceX = cropPixels?.x ?? 0;
-	const sourceY = cropPixels?.y ?? 0;
-	const sourceWidth = cropPixels?.width ?? bitmap.width;
-	const sourceHeight = cropPixels?.height ?? bitmap.height;
-	const canvas = document.createElement('canvas');
-	canvas.width = sourceWidth;
-	canvas.height = sourceHeight;
-
-	const context = canvas.getContext('2d', { willReadFrequently: true });
-
-	if (!context) {
-		bitmap.close();
-		throw new Error('Canvas preprocessing is not available in this browser.');
-	}
-
-	context.drawImage(
-		bitmap,
-		sourceX,
-		sourceY,
-		sourceWidth,
-		sourceHeight,
-		0,
-		0,
-		canvas.width,
-		canvas.height,
-	);
-	bitmap.close();
-
-	if (
-		settings.grayscale ||
-		settings.thresholdEnabled ||
-		settings.contrast !== 0
-	) {
-		const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-		const data = imageData.data;
-
-		for (let index = 0; index < data.length; index += 4) {
-			let red = applyContrast(data[index], settings.contrast);
-			let green = applyContrast(data[index + 1], settings.contrast);
-			let blue = applyContrast(data[index + 2], settings.contrast);
-
-			if (settings.grayscale || settings.thresholdEnabled) {
-				const luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
-				red = luminance;
-				green = luminance;
-				blue = luminance;
-			}
-
-			if (settings.thresholdEnabled) {
-				const thresholdValue = red >= settings.threshold ? 255 : 0;
-				red = thresholdValue;
-				green = thresholdValue;
-				blue = thresholdValue;
-			}
-
-			data[index] = Math.round(red);
-			data[index + 1] = Math.round(green);
-			data[index + 2] = Math.round(blue);
-		}
-
-		context.putImageData(imageData, 0, 0);
-	}
-
-	const blob = await new Promise<Blob>((resolve, reject) => {
-		canvas.toBlob((value) => {
-			if (!value) {
-				reject(new Error('Failed to render the processed image.'));
-				return;
-			}
-
-			resolve(value);
-		}, 'image/png');
-	});
-
-	return {
-		blob,
-		url: URL.createObjectURL(blob),
-		width: canvas.width,
-		height: canvas.height,
-		crop: cropPixels ? crop : null,
-	} satisfies PreparedImage;
-}
-
-function getContainLayout(
-	container: PreviewStageSize,
-	image: Pick<ImageAsset, 'width' | 'height'>,
-) {
-	if (!container.width || !container.height || !image.width || !image.height) {
-		return null;
-	}
-
-	const imageRatio = image.width / image.height;
-	const containerRatio = container.width / container.height;
-
-	if (imageRatio > containerRatio) {
-		const width = container.width;
-		const height = width / imageRatio;
-
-		return {
-			width,
-			height,
-			left: 0,
-			top: (container.height - height) / 2,
-		};
-	}
-
-	const height = container.height;
-	const width = height * imageRatio;
-
-	return {
-		width,
-		height,
-		left: (container.width - width) / 2,
-		top: 0,
-	};
-}
 export default function OcrStudio() {
 	const runLensOcrFn = useServerFn(runLensOcr);
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -809,6 +119,7 @@ export default function OcrStudio() {
 		startTransform: PreviewTransform;
 	} | null>(null);
 
+	const [activeMode, setActiveMode] = useState<StudioMode>('image');
 	const [asset, setAsset] = useState<ImageAsset | null>(null);
 	const [processedPreview, setProcessedPreview] =
 		useState<PreparedImage | null>(null);
@@ -856,6 +167,7 @@ export default function OcrStudio() {
 	const [activeBatchJobId, setActiveBatchJobId] = useState<string | null>(null);
 	const [isBatchRunning, setIsBatchRunning] = useState(false);
 	const [hasHydratedBatchQueue, setHasHydratedBatchQueue] = useState(false);
+	const [isVideoRunning, setIsVideoRunning] = useState(false);
 	const [compatibilityIssues, setCompatibilityIssues] = useState<
 		CompatibilityFeature[]
 	>([]);
@@ -865,7 +177,7 @@ export default function OcrStudio() {
 	const deferredCrop = useDeferredValue(activeCrop);
 	const initialStatus = m.status_initial();
 	const currentSignature = getRunSignature(processing, activeCrop);
-	const isBusy = isRunning || isBatchRunning;
+	const isBusy = isRunning || isBatchRunning || isVideoRunning;
 	const compatibilityMessage = compatibilityIssues.length
 		? m.compatibility_error({
 				features: compatibilityIssues
@@ -1260,13 +572,13 @@ export default function OcrStudio() {
 								? {
 										...entry,
 										status: 'done',
-									confidence: parsedOutput.confidence,
+										confidence: parsedOutput.confidence,
 										wordCount: nextWordCount,
 										lineCount: nextLineCount,
 										text: parsedOutput.text,
 										words: parsedOutput.words,
 										snapshot: {
-										detectedLanguage: result.detectedLanguage,
+											detectedLanguage: result.detectedLanguage,
 											processing: batchProcessing,
 											crop: preparedImage.crop,
 											source: job.source,
@@ -1342,6 +654,10 @@ export default function OcrStudio() {
 	};
 
 	const handlePaste = useEffectEvent(async (event: ClipboardEvent) => {
+		if (activeMode !== 'image') {
+			return;
+		}
+
 		if (compatibilityMessage) {
 			setStatus(m.compatibility_status());
 			setError(compatibilityMessage);
@@ -1532,20 +848,17 @@ export default function OcrStudio() {
 	}, [asset, processedPreview]);
 
 	const rawWheelCleanupRef = useRef<(() => void) | null>(null);
-	const rawPreviewWheelRef = useCallback(
-		(node: HTMLDivElement | null) => {
-			rawWheelCleanupRef.current?.();
-			rawWheelCleanupRef.current = null;
-			rawPreviewSurfaceRef.current = node;
-			if (node) {
-				const handler = (e: WheelEvent) => handlePreviewWheel('raw', e);
-				node.addEventListener('wheel', handler, { passive: false });
-				rawWheelCleanupRef.current = () =>
-					node.removeEventListener('wheel', handler);
-			}
-		},
-		[],
-	);
+	const rawPreviewWheelRef = useCallback((node: HTMLDivElement | null) => {
+		rawWheelCleanupRef.current?.();
+		rawWheelCleanupRef.current = null;
+		rawPreviewSurfaceRef.current = node;
+		if (node) {
+			const handler = (e: WheelEvent) => handlePreviewWheel('raw', e);
+			node.addEventListener('wheel', handler, { passive: false });
+			rawWheelCleanupRef.current = () =>
+				node.removeEventListener('wheel', handler);
+		}
+	}, []);
 
 	const processedWheelCleanupRef = useRef<(() => void) | null>(null);
 	const processedPreviewWheelRef = useCallback(
@@ -1554,8 +867,7 @@ export default function OcrStudio() {
 			processedWheelCleanupRef.current = null;
 			processedPreviewSurfaceRef.current = node;
 			if (node) {
-				const handler = (e: WheelEvent) =>
-					handlePreviewWheel('processed', e);
+				const handler = (e: WheelEvent) => handlePreviewWheel('processed', e);
 				node.addEventListener('wheel', handler, { passive: false });
 				processedWheelCleanupRef.current = () =>
 					node.removeEventListener('wheel', handler);
@@ -2333,790 +1645,817 @@ export default function OcrStudio() {
 	const processedPreviewTransformStyle = {
 		transform: `translate(${processedPreviewTransform.x}px, ${processedPreviewTransform.y}px) scale(${processedPreviewTransform.scale})`,
 	};
-
 	return (
-		<main className="ocr-workspace">
-			<div className="ocr-panel">
-				<div className="panel-head">
-					<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-						{m.ocr_input_title()}
-					</h2>
-					<button
-						type="button"
-						onClick={() => fileInputRef.current?.click()}
-						className="action-pill compact-pill"
+		<main className="ocr-shell">
+			<ModeTabs
+				activeMode={activeMode}
+				isImageBusy={isRunning || isBatchRunning}
+				isVideoRunning={isVideoRunning}
+				onModeChange={setActiveMode}
+			/>
+			<div className="ocr-workspace" hidden={activeMode !== 'image'}>
+				<div className="ocr-panel">
+					<div className="panel-head">
+						<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+							{m.ocr_input_title()}
+						</h2>
+						<button
+							type="button"
+							onClick={() => fileInputRef.current?.click()}
+							className="action-pill compact-pill"
+							disabled={interactionDisabled}
+						>
+							<ImagePlus size={16} />
+							{m.select_image()}
+						</button>
+					</div>
+
+					{compatibilityMessage ? (
+						<p className="status-error">{compatibilityMessage}</p>
+					) : null}
+
+					<input
+						ref={fileInputRef}
+						type="file"
+						multiple
+						accept="image/*"
+						className="hidden"
 						disabled={interactionDisabled}
+						onChange={(event) => {
+							void handleImageFiles(event.target.files, 'picker');
+						}}
+					/>
+
+					<section
+						className={`ocr-dropzone ${isDragging ? 'is-dragging' : ''} ${asset ? 'has-image' : ''}`}
+						aria-label={m.dropzone_aria()}
+						onDragEnter={(event) => {
+							event.preventDefault();
+							setIsDragging(true);
+						}}
+						onDragOver={(event) => {
+							event.preventDefault();
+							setIsDragging(true);
+						}}
+						onDragLeave={(event) => {
+							event.preventDefault();
+							setIsDragging(false);
+						}}
+						onDrop={(event) => {
+							event.preventDefault();
+							setIsDragging(false);
+							void handleImageFiles(event.dataTransfer.files, 'drop');
+						}}
 					>
-						<ImagePlus size={16} />
-						{m.select_image()}
-					</button>
-				</div>
-
-				{compatibilityMessage ? (
-					<p className="status-error">{compatibilityMessage}</p>
-				) : null}
-
-				<input
-					ref={fileInputRef}
-					type="file"
-					multiple
-					accept="image/*"
-					className="hidden"
-					disabled={interactionDisabled}
-					onChange={(event) => {
-						void handleImageFiles(event.target.files, 'picker');
-					}}
-				/>
-
-				<section
-					className={`ocr-dropzone ${isDragging ? 'is-dragging' : ''} ${asset ? 'has-image' : ''}`}
-					aria-label={m.dropzone_aria()}
-					onDragEnter={(event) => {
-						event.preventDefault();
-						setIsDragging(true);
-					}}
-					onDragOver={(event) => {
-						event.preventDefault();
-						setIsDragging(true);
-					}}
-					onDragLeave={(event) => {
-						event.preventDefault();
-						setIsDragging(false);
-					}}
-					onDrop={(event) => {
-						event.preventDefault();
-						setIsDragging(false);
-						void handleImageFiles(event.dataTransfer.files, 'drop');
-					}}
-				>
-					{asset ? (
-						<>
-							<div className="preview-meta">
-								<span>LENS</span>
-								<span>{currentSourceLabel}</span>
-								<span>{formatBytes(asset.size)}</span>
-								<span>{asset.type.replace('image/', '')}</span>
-							</div>
-							<div className="preview-grid">
-								<section className="preview-card">
-									<div className="preview-card-head">
-										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-											{m.raw_preview_title()}
-										</h3>
-										<button
-											type="button"
-											onClick={() => fileInputRef.current?.click()}
-											className="action-pill ghost-pill compact-pill"
-											disabled={interactionDisabled}
-										>
-											{m.replace_image()}
-										</button>
-									</div>
-									<div className="preview-toolbar">
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('raw', -1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={rawPreviewTransform.scale <= MIN_PREVIEW_SCALE}
-										>
-											<SearchX size={16} />
-											{m.preview_zoom_out()}
-										</button>
-										<button
-											type="button"
-											onClick={() => resetPreviewTransform('raw')}
-											className="action-pill ghost-pill compact-pill"
-											disabled={rawPreviewTransform.scale === 1}
-										>
-											{m.preview_zoom_reset()}
-										</button>
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('raw', 1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={rawPreviewTransform.scale >= MAX_PREVIEW_SCALE}
-										>
-											<Search size={16} />
-											{m.preview_zoom_in()}
-										</button>
-										<button
-											type="button"
-											onClick={() => {
-												setIsPanMode((current) => !current);
-											}}
-											className={`action-pill ghost-pill compact-pill ${isPanMode ? 'is-active' : ''}`}
-										>
-											<Move size={16} />
-											{isPanMode ? m.preview_pan_off() : m.preview_pan_on()}
-										</button>
-										<span className="preview-zoom-level">
-											{m.preview_zoom_level({ scale: rawZoom })}
-										</span>
-									</div>
-									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
-									<div className="preview-stage is-split">
-										<div
-											ref={rawPreviewWheelRef}
-											className={`preview-surface ${cropEnabled ? 'is-crop-enabled' : ''} ${rawPreviewTransform.scale > 1 ? 'is-pannable' : ''} ${isPanMode ? 'is-pan-mode' : ''}`}
-											onPointerDown={handleRawPreviewPointerDown}
-											onPointerMove={handleCropPointerMove}
-											onPointerUp={finishCropDrag}
-											onPointerCancel={finishCropDrag}
-										>
-											<div
-												className="preview-canvas"
-												style={rawPreviewTransformStyle}
+						{asset ? (
+							<>
+								<div className="preview-meta">
+									<span>LENS</span>
+									<span>{currentSourceLabel}</span>
+									<span>{formatBytes(asset.size)}</span>
+									<span>{asset.type.replace('image/', '')}</span>
+								</div>
+								<div className="preview-grid">
+									<section className="preview-card">
+										<div className="preview-card-head">
+											<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+												{m.raw_preview_title()}
+											</h3>
+											<button
+												type="button"
+												onClick={() => fileInputRef.current?.click()}
+												className="action-pill ghost-pill compact-pill"
+												disabled={interactionDisabled}
 											>
-												<img
-													src={asset.url}
-													alt={asset.name}
-													className="ocr-preview"
-													draggable={false}
-												/>
-												{cropEnabled && cropBoxStyle ? (
-													<div
-														className={`crop-layer ${isPanMode ? 'is-pan-mode' : ''}`}
-														aria-hidden="true"
-													>
-														<div
-															className={`crop-box ${isCropping ? 'is-drawing' : ''} ${isMovingCrop ? 'is-moving' : ''}`}
-															style={cropBoxStyle}
-															onPointerDown={handleCropMovePointerDown}
-														>
-															<span className="crop-box-label">
-																{m.crop_label()}
-															</span>
-															{cropHandles.map((handle) => (
-																<button
-																	key={handle}
-																	type="button"
-																	onPointerDown={(event) => {
-																		handleCropHandlePointerDown(handle, event);
-																	}}
-																	className={`crop-handle is-${handle}`}
-																	aria-label={m.crop_resize_handle({
-																		handle,
-																	})}
-																	disabled={isBusy}
-																/>
-															))}
-														</div>
-													</div>
-												) : null}
-											</div>
+												{m.replace_image()}
+											</button>
 										</div>
-									</div>
-								</section>
-
-								<section className="preview-card">
-									<div className="preview-card-head">
-										<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-											{m.processed_preview_title()}
-										</h3>
-										<span className="preview-status-pill">{previewStatus}</span>
-									</div>
-									<div className="preview-toolbar">
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('processed', -1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={
-												processedPreviewTransform.scale <= MIN_PREVIEW_SCALE
-											}
-										>
-											<SearchX size={16} />
-											{m.preview_zoom_out()}
-										</button>
-										<button
-											type="button"
-											onClick={() => resetPreviewTransform('processed')}
-											className="action-pill ghost-pill compact-pill"
-											disabled={processedPreviewTransform.scale === 1}
-										>
-											{m.preview_zoom_reset()}
-										</button>
-										<button
-											type="button"
-											onClick={() => handlePreviewZoom('processed', 1)}
-											className="action-pill ghost-pill compact-pill"
-											disabled={
-												processedPreviewTransform.scale >= MAX_PREVIEW_SCALE
-											}
-										>
-											<Search size={16} />
-											{m.preview_zoom_in()}
-										</button>
-										<span className="preview-zoom-level">
-											{m.preview_zoom_level({ scale: processedZoom })}
-										</span>
-									</div>
-									<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
-									<div className="preview-stage is-split">
-										<div
-											ref={processedPreviewWheelRef}
-											className={`preview-surface ${processedPreviewTransform.scale > 1 ? 'is-pannable' : ''}`}
-											onPointerDown={handleProcessedPreviewPointerDown}
-										>
-											{processedPreview ? (
+										<div className="preview-toolbar">
+											<button
+												type="button"
+												onClick={() => handlePreviewZoom('raw', -1)}
+												className="action-pill ghost-pill compact-pill"
+												disabled={
+													rawPreviewTransform.scale <= MIN_PREVIEW_SCALE
+												}
+											>
+												<SearchX size={16} />
+												{m.preview_zoom_out()}
+											</button>
+											<button
+												type="button"
+												onClick={() => resetPreviewTransform('raw')}
+												className="action-pill ghost-pill compact-pill"
+												disabled={rawPreviewTransform.scale === 1}
+											>
+												{m.preview_zoom_reset()}
+											</button>
+											<button
+												type="button"
+												onClick={() => handlePreviewZoom('raw', 1)}
+												className="action-pill ghost-pill compact-pill"
+												disabled={
+													rawPreviewTransform.scale >= MAX_PREVIEW_SCALE
+												}
+											>
+												<Search size={16} />
+												{m.preview_zoom_in()}
+											</button>
+											<button
+												type="button"
+												onClick={() => {
+													setIsPanMode((current) => !current);
+												}}
+												className={`action-pill ghost-pill compact-pill ${isPanMode ? 'is-active' : ''}`}
+											>
+												<Move size={16} />
+												{isPanMode ? m.preview_pan_off() : m.preview_pan_on()}
+											</button>
+											<span className="preview-zoom-level">
+												{m.preview_zoom_level({ scale: rawZoom })}
+											</span>
+										</div>
+										<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
+										<div className="preview-stage is-split">
+											<div
+												ref={rawPreviewWheelRef}
+												className={`preview-surface ${cropEnabled ? 'is-crop-enabled' : ''} ${rawPreviewTransform.scale > 1 ? 'is-pannable' : ''} ${isPanMode ? 'is-pan-mode' : ''}`}
+												onPointerDown={handleRawPreviewPointerDown}
+												onPointerMove={handleCropPointerMove}
+												onPointerUp={finishCropDrag}
+												onPointerCancel={finishCropDrag}
+											>
 												<div
 													className="preview-canvas"
-													style={processedPreviewTransformStyle}
+													style={rawPreviewTransformStyle}
 												>
 													<img
-														src={processedPreview.url}
-														alt={m.processed_preview_alt()}
+														src={asset.url}
+														alt={asset.name}
 														className="ocr-preview"
 														draggable={false}
 													/>
-													{overlayPreview && processedLayout ? (
-														<div className="overlay-layer" aria-hidden="true">
-															{detectedWords.map((word, index) => {
-																const left =
-																	processedLayout.left +
-																	(word.bbox.x0 / overlayPreview.width) *
-																		processedLayout.width;
-																const top =
-																	processedLayout.top +
-																	(word.bbox.y0 / overlayPreview.height) *
-																		processedLayout.height;
-																const width =
-																	((word.bbox.x1 - word.bbox.x0) /
-																		overlayPreview.width) *
-																	processedLayout.width;
-																const height =
-																	((word.bbox.y1 - word.bbox.y0) /
-																		overlayPreview.height) *
-																	processedLayout.height;
-
-																return (
-																	<div
-																		key={getWordKey(word)}
-																		className={`word-box ${selectedWordIndex === index ? 'is-selected' : ''}`}
-																		style={{ left, top, width, height }}
+													{cropEnabled && cropBoxStyle ? (
+														<div
+															className={`crop-layer ${isPanMode ? 'is-pan-mode' : ''}`}
+															aria-hidden="true"
+														>
+															<div
+																className={`crop-box ${isCropping ? 'is-drawing' : ''} ${isMovingCrop ? 'is-moving' : ''}`}
+																style={cropBoxStyle}
+																onPointerDown={handleCropMovePointerDown}
+															>
+																<span className="crop-box-label">
+																	{m.crop_label()}
+																</span>
+																{cropHandles.map((handle) => (
+																	<button
+																		key={handle}
+																		type="button"
+																		onPointerDown={(event) => {
+																			handleCropHandlePointerDown(
+																				handle,
+																				event,
+																			);
+																		}}
+																		className={`crop-handle is-${handle}`}
+																		aria-label={m.crop_resize_handle({
+																			handle,
+																		})}
+																		disabled={isBusy}
 																	/>
-																);
-															})}
+																))}
+															</div>
 														</div>
 													) : null}
 												</div>
-											) : (
-												<div className="preview-loading">
-													{m.processed_preview_loading()}
-												</div>
-											)}
+											</div>
 										</div>
-									</div>
-								</section>
-							</div>
-							<div className="preview-footer">
-								<strong>{asset.name}</strong>
-								<span>{previewStatus}</span>
-							</div>
-						</>
-					) : (
-						<div className="dropzone-empty">
-							<div className="dropzone-icon">
-								<ClipboardPaste size={24} />
-							</div>
-							<p className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.dropzone_title()}
-							</p>
-							<button
-								type="button"
-								onClick={() => fileInputRef.current?.click()}
-								className="action-pill"
-								disabled={interactionDisabled}
-							>
-								<ImagePlus size={16} />
-								{m.select_image()}
-							</button>
-						</div>
-					)}
-				</section>
+									</section>
 
-				<div className="meter-wrap">
-					<div className="meter-copy">
-						<span>{status}</span>
-						<span>{meterProgress}%</span>
-					</div>
-					<div className="meter-track" aria-hidden="true">
-						<div
-							className="meter-fill"
-							style={{ width: `${meterProgress}%` }}
-						/>
-					</div>
-				</div>
-			</div>
+									<section className="preview-card">
+										<div className="preview-card-head">
+											<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+												{m.processed_preview_title()}
+											</h3>
+											<span className="preview-status-pill">
+												{previewStatus}
+											</span>
+										</div>
+										<div className="preview-toolbar">
+											<button
+												type="button"
+												onClick={() => handlePreviewZoom('processed', -1)}
+												className="action-pill ghost-pill compact-pill"
+												disabled={
+													processedPreviewTransform.scale <= MIN_PREVIEW_SCALE
+												}
+											>
+												<SearchX size={16} />
+												{m.preview_zoom_out()}
+											</button>
+											<button
+												type="button"
+												onClick={() => resetPreviewTransform('processed')}
+												className="action-pill ghost-pill compact-pill"
+												disabled={processedPreviewTransform.scale === 1}
+											>
+												{m.preview_zoom_reset()}
+											</button>
+											<button
+												type="button"
+												onClick={() => handlePreviewZoom('processed', 1)}
+												className="action-pill ghost-pill compact-pill"
+												disabled={
+													processedPreviewTransform.scale >= MAX_PREVIEW_SCALE
+												}
+											>
+												<Search size={16} />
+												{m.preview_zoom_in()}
+											</button>
+											<span className="preview-zoom-level">
+												{m.preview_zoom_level({ scale: processedZoom })}
+											</span>
+										</div>
+										<p className="preview-pan-hint">{m.preview_pan_hint()}</p>
+										<div className="preview-stage is-split">
+											<div
+												ref={processedPreviewWheelRef}
+												className={`preview-surface ${processedPreviewTransform.scale > 1 ? 'is-pannable' : ''}`}
+												onPointerDown={handleProcessedPreviewPointerDown}
+											>
+												{processedPreview ? (
+													<div
+														className="preview-canvas"
+														style={processedPreviewTransformStyle}
+													>
+														<img
+															src={processedPreview.url}
+															alt={m.processed_preview_alt()}
+															className="ocr-preview"
+															draggable={false}
+														/>
+														{overlayPreview && processedLayout ? (
+															<div className="overlay-layer" aria-hidden="true">
+																{detectedWords.map((word, index) => {
+																	const left =
+																		processedLayout.left +
+																		(word.bbox.x0 / overlayPreview.width) *
+																			processedLayout.width;
+																	const top =
+																		processedLayout.top +
+																		(word.bbox.y0 / overlayPreview.height) *
+																			processedLayout.height;
+																	const width =
+																		((word.bbox.x1 - word.bbox.x0) /
+																			overlayPreview.width) *
+																		processedLayout.width;
+																	const height =
+																		((word.bbox.y1 - word.bbox.y0) /
+																			overlayPreview.height) *
+																		processedLayout.height;
 
-			<div className="ocr-panel">
-				<div className="panel-head">
-					<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-						{m.output_title()}
-					</h2>
-					<div className="flex flex-wrap gap-2">
-						<button
-							type="button"
-							onClick={handleCopy}
-							disabled={!ocrText}
-							className="action-pill"
-						>
-							{copied ? <Check size={18} /> : <Copy size={18} />}
-							{copied ? m.copied_text() : m.copy_text()}
-						</button>
-						<button
-							type="button"
-							onClick={() => void handleReset()}
-							className="action-pill ghost-pill"
-							disabled={isBusy}
-						>
-							<RotateCcw size={18} />
-							{m.reset()}
-						</button>
-					</div>
-				</div>
-
-				<div className="control-grid">
-					<section className="control-card">
-						<div className="control-head">
-							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.preprocess_title()}
-							</h3>
-							<SlidersHorizontal size={16} />
-						</div>
-
-						<label className="switch-row">
-							<input
-								type="checkbox"
-								checked={processing.grayscale}
-								onChange={(event) => {
-									handleProcessingChange('grayscale', event.target.checked);
-								}}
-							/>
-							<span>{m.preprocess_grayscale()}</span>
-						</label>
-
-						<label className="switch-row">
-							<input
-								type="checkbox"
-								checked={processing.thresholdEnabled}
-								onChange={(event) => {
-									handleProcessingChange(
-										'thresholdEnabled',
-										event.target.checked,
-									);
-								}}
-							/>
-							<span>{m.preprocess_threshold()}</span>
-						</label>
-
-						<label className="control-field">
-							<div className="control-label-row">
-								<span>{m.preprocess_threshold()}</span>
-								<strong>{processing.threshold}</strong>
-							</div>
-							<input
-								className="range-input"
-								type="range"
-								min="0"
-								max="255"
-								value={processing.threshold}
-								disabled={!processing.thresholdEnabled}
-								onChange={(event) => {
-									handleProcessingChange(
-										'threshold',
-										Number(event.target.value),
-									);
-								}}
-							/>
-						</label>
-
-						<label className="control-field">
-							<div className="control-label-row">
-								<span>{m.preprocess_contrast()}</span>
-								<strong>{contrastLabel}</strong>
-							</div>
-							<input
-								className="range-input"
-								type="range"
-								min="-100"
-								max="100"
-								value={processing.contrast}
-								onChange={(event) => {
-									handleProcessingChange(
-										'contrast',
-										Number(event.target.value),
-									);
-								}}
-							/>
-						</label>
-
-						<p className="control-copy muted-copy">
-							{m.preprocess_threshold_hint()}
-						</p>
-
-						<div className="control-actions">
-							<button
-								type="button"
-								onClick={() => {
-									void handleApplyProcessing();
-								}}
-								className="action-pill compact-pill"
-								disabled={!sourceFileRef.current || isBusy}
-							>
-								{m.preprocess_apply()}
-							</button>
-							<button
-								type="button"
-								onClick={handleResetProcessing}
-								className="action-pill ghost-pill compact-pill"
-								disabled={isBusy}
-							>
-								{m.preprocess_reset()}
-							</button>
-						</div>
-					</section>
-
-					<section className="control-card">
-						<div className="control-head">
-							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.crop_title()}
-							</h3>
-							<Crop size={16} />
-						</div>
-
-						<label className="switch-row">
-							<input
-								type="checkbox"
-								checked={cropEnabled}
-								onChange={(event) => {
-									setCropEnabled(event.target.checked);
-									if (!event.target.checked) {
-										setCropSelection(null);
-									}
-								}}
-								disabled={isBusy}
-							/>
-							<span>{m.crop_enable()}</span>
-						</label>
-
-						<p className="control-copy muted-copy">{m.crop_hint()}</p>
-
-						{cropPixels ? (
-							<div className="selection-card is-stacked">
-								<strong>{m.crop_selection_active()}</strong>
-								<span>
-									{m.crop_selection_size({
-										width: cropPixels.width,
-										height: cropPixels.height,
-									})}
-								</span>
-								<span>
-									{m.crop_selection_origin({
-										x: cropPixels.x,
-										y: cropPixels.y,
-									})}
-								</span>
-							</div>
-						) : (
-							<p className="control-copy muted-copy">{m.crop_empty()}</p>
-						)}
-
-						<div className="control-actions">
-							<button
-								type="button"
-								onClick={() => {
-									void handleApplyProcessing();
-								}}
-								className="action-pill compact-pill"
-								disabled={!sourceFileRef.current || !cropPixels || isBusy}
-							>
-								{m.crop_apply()}
-							</button>
-							<button
-								type="button"
-								onClick={() => {
-									setCropSelection(null);
-									setCropEnabled(false);
-								}}
-								className="action-pill ghost-pill compact-pill"
-								disabled={!cropSelection || isBusy}
-							>
-								{m.crop_clear()}
-							</button>
-						</div>
-					</section>
-
-					<section className="control-card">
-						<div className="control-head">
-							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.overlay_title()}
-							</h3>
-							<button
-								type="button"
-								onClick={() => {
-									setShowBoxes((current) => !current);
-								}}
-								className="action-pill ghost-pill compact-pill"
-								disabled={!detectedWords.length}
-							>
-								{showBoxes ? <EyeOff size={16} /> : <Eye size={16} />}
-								{overlayActionLabel}
-							</button>
-						</div>
-
-						{selectedWord ? (
-							<div className="selection-card">
-								<strong>{selectedWord.text}</strong>
-								<span>
-									{selectedWord.confidence === null
-										? '--'
-										: `${Math.round(selectedWord.confidence)}%`}
-								</span>
-							</div>
-						) : (
-							<p className="control-copy muted-copy">{m.overlay_empty()}</p>
-						)}
-					</section>
-				</div>
-
-				{error ? <p className="status-error">{error}</p> : null}
-
-				<div className="mt-5 grid gap-3 sm:grid-cols-3">
-					{stats.map(([label, value]) => (
-						<div key={label} className="stat-card">
-							<span className="stat-label">{label}</span>
-							<strong>{value}</strong>
-						</div>
-					))}
-				</div>
-
-				{detectedWords.length ? (
-					<section className="mt-5">
-						<div className="panel-head gap-y-3">
-							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.detected_words_title({ count: detectedWords.length })}
-							</h3>
-							<button
-								type="button"
-								onClick={() => {
-									setSelectedWordIndex(null);
-								}}
-								className="action-pill ghost-pill compact-pill"
-								disabled={selectedWordIndex === null}
-							>
-								{m.detected_words_clear()}
-							</button>
-						</div>
-						<div className="word-list">
-							{visibleWords.map((word, index) => {
-								const isActive = selectedWordIndex === index;
-
-								return (
-									<button
-										key={getWordKey(word)}
-										type="button"
-										onClick={() => {
-											setSelectedWordIndex(isActive ? null : index);
-										}}
-										className={`word-chip ${isActive ? 'is-active' : ''}`}
-									>
-										<span>{word.text}</span>
-										<small>
-											{word.confidence === null
-												? '--'
-												: `${Math.round(word.confidence)}%`}
-										</small>
-									</button>
-								);
-							})}
-						</div>
-					</section>
-				) : null}
-
-				<div className={`ocr-output ${!ocrText ? 'is-empty' : ''}`}>
-					{isRunning ? (
-						<div className="output-state">
-							<LoaderCircle className="animate-spin" size={24} />
-							<p>{m.output_running()}</p>
-						</div>
-					) : null}
-
-					{!isRunning && !ocrText ? (
-						<div className="output-state">
-							<ScanText size={24} />
-							<p>{m.output_empty()}</p>
-						</div>
-					) : null}
-
-					{ocrText ? <pre>{ocrText}</pre> : null}
-				</div>
-
-				<section className="mt-5">
-					<div className="panel-head gap-y-3">
-						<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-							{m.export_title()}
-						</h3>
-					</div>
-					<div className="export-card-grid">
-						<button
-							type="button"
-							onClick={handleExportText}
-							disabled={!ocrText}
-							className="export-card"
-						>
-							<Download size={18} />
-							<div className="export-card-body">
-								<span className="export-card-label">{m.export_txt()}</span>
-								<span className="export-card-hint">.txt</span>
-							</div>
-						</button>
-						<button
-							type="button"
-							onClick={handleExportJson}
-							disabled={!lastRunSnapshot}
-							className="export-card"
-						>
-							<Download size={18} />
-							<div className="export-card-body">
-								<span className="export-card-label">{m.export_json()}</span>
-								<span className="export-card-hint">.json</span>
-							</div>
-						</button>
-						<button
-							type="button"
-							onClick={handleExportBoxes}
-							disabled={!detectedWords.length || !lastRunSnapshot}
-							className="export-card"
-						>
-							<Download size={18} />
-							<div className="export-card-body">
-								<span className="export-card-label">{m.export_boxes()}</span>
-								<span className="export-card-hint">.json</span>
-							</div>
-						</button>
-						<button
-							type="button"
-							onClick={handleExportBoxesCsv}
-							disabled={!detectedWords.length || !lastRunSnapshot}
-							className="export-card"
-						>
-							<Download size={18} />
-							<div className="export-card-body">
-								<span className="export-card-label">{m.export_csv()}</span>
-								<span className="export-card-hint">.csv</span>
-							</div>
-						</button>
-					</div>
-				</section>
-
-				{batchJobs.length ? (
-					<section className="mt-5">
-						<div className="panel-head gap-y-3">
-							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-								{m.batch_title({ count: batchJobs.length })}
-							</h3>
-							<div className="batch-toolbar">
-								<button
-									type="button"
-									onClick={handleExportBatchZip}
-									className="action-pill ghost-pill compact-pill"
-									disabled={!batchJobs.length}
-								>
-									<Download size={16} />
-									{m.batch_export_zip()}
-								</button>
-								<button
-									type="button"
-									onClick={() => {
-										void cancelBatchRun();
-									}}
-									className="action-pill ghost-pill compact-pill"
-									disabled={!isBatchRunning}
-								>
-									<X size={16} />
-									{m.batch_cancel()}
-								</button>
-								<button
-									type="button"
-									onClick={() => {
-										setBatchJobs([]);
-										setActiveBatchJobId(null);
-									}}
-									className="action-pill ghost-pill compact-pill"
-									disabled={isBatchRunning}
-								>
-									{m.batch_clear()}
-								</button>
-							</div>
-						</div>
-						<div className="batch-list">
-							{batchJobs.map((job) => {
-								const isActive = activeBatchJobId === job.id;
-								const summary =
-									job.status === 'done'
-										? m.batch_stats({
-												words: job.wordCount,
-												lines: job.lineCount,
-												confidence: job.confidence ?? '--',
-											})
-										: job.error || m.batch_pending();
-
-								return (
-									<article
-										key={job.id}
-										className={`batch-card ${isActive ? 'is-active' : ''}`}
-									>
-										<div className="batch-card-strip">
-											<div className="batch-thumb-strip" aria-hidden="true">
-												{job.thumbnailDataUrl ? (
-													<img
-														src={job.thumbnailDataUrl}
-														alt={job.name}
-														className="batch-thumb-image"
-													/>
+																	return (
+																		<div
+																			key={getWordKey(word)}
+																			className={`word-box ${selectedWordIndex === index ? 'is-selected' : ''}`}
+																			style={{ left, top, width, height }}
+																		/>
+																	);
+																})}
+															</div>
+														) : null}
+													</div>
 												) : (
-													<div className="batch-thumb-fallback">
-														<ImagePlus size={18} />
+													<div className="preview-loading">
+														{m.processed_preview_loading()}
 													</div>
 												)}
 											</div>
-											<div className="batch-card-body">
-												<div className="batch-head">
-													<strong>{job.name}</strong>
-													<span className={`batch-status is-${job.status}`}>
-														{getBatchStatusLabel(job.status)}
-													</span>
-												</div>
-												<div className="batch-meta">
-													<span>{getSourceLabel(job.source)}</span>
-													{job.snapshot ? (
-														<span>
-															{getDetectedLanguageLabel(job.snapshot.detectedLanguage)}
-														</span>
-													) : null}
-												</div>
-												<p className="batch-copy">{summary}</p>
-												<div className="batch-actions">
-													<button
-														type="button"
-														onClick={() => {
-															void handleOpenBatchJob(job.id);
-														}}
-														className="action-pill ghost-pill compact-pill"
-														disabled={isBusy || job.status === 'running'}
-													>
-														{m.batch_open()}
-													</button>
-												</div>
-											</div>
 										</div>
-									</article>
-								);
-							})}
+									</section>
+								</div>
+								<div className="preview-footer">
+									<strong>{asset.name}</strong>
+									<span>{previewStatus}</span>
+								</div>
+							</>
+						) : (
+							<div className="dropzone-empty">
+								<div className="dropzone-icon">
+									<ClipboardPaste size={24} />
+								</div>
+								<p className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+									{m.dropzone_title()}
+								</p>
+								<button
+									type="button"
+									onClick={() => fileInputRef.current?.click()}
+									className="action-pill"
+									disabled={interactionDisabled}
+								>
+									<ImagePlus size={16} />
+									{m.select_image()}
+								</button>
+							</div>
+						)}
+					</section>
+
+					<div className="meter-wrap">
+						<div className="meter-copy">
+							<span>{status}</span>
+							<span>{meterProgress}%</span>
+						</div>
+						<div className="meter-track" aria-hidden="true">
+							<div
+								className="meter-fill"
+								style={{ width: `${meterProgress}%` }}
+							/>
+						</div>
+					</div>
+				</div>
+
+				<div className="ocr-panel">
+					<div className="panel-head">
+						<h2 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+							{m.output_title()}
+						</h2>
+						<div className="flex flex-wrap gap-2">
+							<button
+								type="button"
+								onClick={handleCopy}
+								disabled={!ocrText}
+								className="action-pill"
+							>
+								{copied ? <Check size={18} /> : <Copy size={18} />}
+								{copied ? m.copied_text() : m.copy_text()}
+							</button>
+							<button
+								type="button"
+								onClick={() => void handleReset()}
+								className="action-pill ghost-pill"
+								disabled={isBusy}
+							>
+								<RotateCcw size={18} />
+								{m.reset()}
+							</button>
+						</div>
+					</div>
+
+					<div className="control-grid">
+						<section className="control-card">
+							<div className="control-head">
+								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+									{m.preprocess_title()}
+								</h3>
+								<SlidersHorizontal size={16} />
+							</div>
+
+							<label className="switch-row">
+								<input
+									type="checkbox"
+									checked={processing.grayscale}
+									onChange={(event) => {
+										handleProcessingChange('grayscale', event.target.checked);
+									}}
+								/>
+								<span>{m.preprocess_grayscale()}</span>
+							</label>
+
+							<label className="switch-row">
+								<input
+									type="checkbox"
+									checked={processing.thresholdEnabled}
+									onChange={(event) => {
+										handleProcessingChange(
+											'thresholdEnabled',
+											event.target.checked,
+										);
+									}}
+								/>
+								<span>{m.preprocess_threshold()}</span>
+							</label>
+
+							<label className="control-field">
+								<div className="control-label-row">
+									<span>{m.preprocess_threshold()}</span>
+									<strong>{processing.threshold}</strong>
+								</div>
+								<input
+									className="range-input"
+									type="range"
+									min="0"
+									max="255"
+									value={processing.threshold}
+									disabled={!processing.thresholdEnabled}
+									onChange={(event) => {
+										handleProcessingChange(
+											'threshold',
+											Number(event.target.value),
+										);
+									}}
+								/>
+							</label>
+
+							<label className="control-field">
+								<div className="control-label-row">
+									<span>{m.preprocess_contrast()}</span>
+									<strong>{contrastLabel}</strong>
+								</div>
+								<input
+									className="range-input"
+									type="range"
+									min="-100"
+									max="100"
+									value={processing.contrast}
+									onChange={(event) => {
+										handleProcessingChange(
+											'contrast',
+											Number(event.target.value),
+										);
+									}}
+								/>
+							</label>
+
+							<p className="control-copy muted-copy">
+								{m.preprocess_threshold_hint()}
+							</p>
+
+							<div className="control-actions">
+								<button
+									type="button"
+									onClick={() => {
+										void handleApplyProcessing();
+									}}
+									className="action-pill compact-pill"
+									disabled={!sourceFileRef.current || isBusy}
+								>
+									{m.preprocess_apply()}
+								</button>
+								<button
+									type="button"
+									onClick={handleResetProcessing}
+									className="action-pill ghost-pill compact-pill"
+									disabled={isBusy}
+								>
+									{m.preprocess_reset()}
+								</button>
+							</div>
+						</section>
+
+						<section className="control-card">
+							<div className="control-head">
+								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+									{m.crop_title()}
+								</h3>
+								<Crop size={16} />
+							</div>
+
+							<label className="switch-row">
+								<input
+									type="checkbox"
+									checked={cropEnabled}
+									onChange={(event) => {
+										setCropEnabled(event.target.checked);
+										if (!event.target.checked) {
+											setCropSelection(null);
+										}
+									}}
+									disabled={isBusy}
+								/>
+								<span>{m.crop_enable()}</span>
+							</label>
+
+							<p className="control-copy muted-copy">{m.crop_hint()}</p>
+
+							{cropPixels ? (
+								<div className="selection-card is-stacked">
+									<strong>{m.crop_selection_active()}</strong>
+									<span>
+										{m.crop_selection_size({
+											width: cropPixels.width,
+											height: cropPixels.height,
+										})}
+									</span>
+									<span>
+										{m.crop_selection_origin({
+											x: cropPixels.x,
+											y: cropPixels.y,
+										})}
+									</span>
+								</div>
+							) : (
+								<p className="control-copy muted-copy">{m.crop_empty()}</p>
+							)}
+
+							<div className="control-actions">
+								<button
+									type="button"
+									onClick={() => {
+										void handleApplyProcessing();
+									}}
+									className="action-pill compact-pill"
+									disabled={!sourceFileRef.current || !cropPixels || isBusy}
+								>
+									{m.crop_apply()}
+								</button>
+								<button
+									type="button"
+									onClick={() => {
+										setCropSelection(null);
+										setCropEnabled(false);
+									}}
+									className="action-pill ghost-pill compact-pill"
+									disabled={!cropSelection || isBusy}
+								>
+									{m.crop_clear()}
+								</button>
+							</div>
+						</section>
+
+						<section className="control-card">
+							<div className="control-head">
+								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+									{m.overlay_title()}
+								</h3>
+								<button
+									type="button"
+									onClick={() => {
+										setShowBoxes((current) => !current);
+									}}
+									className="action-pill ghost-pill compact-pill"
+									disabled={!detectedWords.length}
+								>
+									{showBoxes ? <EyeOff size={16} /> : <Eye size={16} />}
+									{overlayActionLabel}
+								</button>
+							</div>
+
+							{selectedWord ? (
+								<div className="selection-card">
+									<strong>{selectedWord.text}</strong>
+									<span>
+										{selectedWord.confidence === null
+											? '--'
+											: `${Math.round(selectedWord.confidence)}%`}
+									</span>
+								</div>
+							) : (
+								<p className="control-copy muted-copy">{m.overlay_empty()}</p>
+							)}
+						</section>
+					</div>
+
+					{error ? <p className="status-error">{error}</p> : null}
+
+					<div className="mt-5 grid gap-3 sm:grid-cols-3">
+						{stats.map(([label, value]) => (
+							<div key={label} className="stat-card">
+								<span className="stat-label">{label}</span>
+								<strong>{value}</strong>
+							</div>
+						))}
+					</div>
+
+					{detectedWords.length ? (
+						<section className="mt-5">
+							<div className="panel-head gap-y-3">
+								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+									{m.detected_words_title({ count: detectedWords.length })}
+								</h3>
+								<button
+									type="button"
+									onClick={() => {
+										setSelectedWordIndex(null);
+									}}
+									className="action-pill ghost-pill compact-pill"
+									disabled={selectedWordIndex === null}
+								>
+									{m.detected_words_clear()}
+								</button>
+							</div>
+							<div className="word-list">
+								{visibleWords.map((word, index) => {
+									const isActive = selectedWordIndex === index;
+
+									return (
+										<button
+											key={getWordKey(word)}
+											type="button"
+											onClick={() => {
+												setSelectedWordIndex(isActive ? null : index);
+											}}
+											className={`word-chip ${isActive ? 'is-active' : ''}`}
+										>
+											<span>{word.text}</span>
+											<small>
+												{word.confidence === null
+													? '--'
+													: `${Math.round(word.confidence)}%`}
+											</small>
+										</button>
+									);
+								})}
+							</div>
+						</section>
+					) : null}
+
+					<div className={`ocr-output ${!ocrText ? 'is-empty' : ''}`}>
+						{isRunning ? (
+							<div className="output-state">
+								<LoaderCircle className="animate-spin" size={24} />
+								<p>{m.output_running()}</p>
+							</div>
+						) : null}
+
+						{!isRunning && !ocrText ? (
+							<div className="output-state">
+								<ScanText size={24} />
+								<p>{m.output_empty()}</p>
+							</div>
+						) : null}
+
+						{ocrText ? <pre>{ocrText}</pre> : null}
+					</div>
+
+					<section className="mt-5">
+						<div className="panel-head gap-y-3">
+							<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+								{m.export_title()}
+							</h3>
+						</div>
+						<div className="export-card-grid">
+							<button
+								type="button"
+								onClick={handleExportText}
+								disabled={!ocrText}
+								className="export-card"
+							>
+								<Download size={18} />
+								<div className="export-card-body">
+									<span className="export-card-label">{m.export_txt()}</span>
+									<span className="export-card-hint">.txt</span>
+								</div>
+							</button>
+							<button
+								type="button"
+								onClick={handleExportJson}
+								disabled={!lastRunSnapshot}
+								className="export-card"
+							>
+								<Download size={18} />
+								<div className="export-card-body">
+									<span className="export-card-label">{m.export_json()}</span>
+									<span className="export-card-hint">.json</span>
+								</div>
+							</button>
+							<button
+								type="button"
+								onClick={handleExportBoxes}
+								disabled={!detectedWords.length || !lastRunSnapshot}
+								className="export-card"
+							>
+								<Download size={18} />
+								<div className="export-card-body">
+									<span className="export-card-label">{m.export_boxes()}</span>
+									<span className="export-card-hint">.json</span>
+								</div>
+							</button>
+							<button
+								type="button"
+								onClick={handleExportBoxesCsv}
+								disabled={!detectedWords.length || !lastRunSnapshot}
+								className="export-card"
+							>
+								<Download size={18} />
+								<div className="export-card-body">
+									<span className="export-card-label">{m.export_csv()}</span>
+									<span className="export-card-hint">.csv</span>
+								</div>
+							</button>
 						</div>
 					</section>
-				) : null}
+
+					{batchJobs.length ? (
+						<section className="mt-5">
+							<div className="panel-head gap-y-3">
+								<h3 className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+									{m.batch_title({ count: batchJobs.length })}
+								</h3>
+								<div className="batch-toolbar">
+									<button
+										type="button"
+										onClick={handleExportBatchZip}
+										className="action-pill ghost-pill compact-pill"
+										disabled={!batchJobs.length}
+									>
+										<Download size={16} />
+										{m.batch_export_zip()}
+									</button>
+									<button
+										type="button"
+										onClick={() => {
+											void cancelBatchRun();
+										}}
+										className="action-pill ghost-pill compact-pill"
+										disabled={!isBatchRunning}
+									>
+										<X size={16} />
+										{m.batch_cancel()}
+									</button>
+									<button
+										type="button"
+										onClick={() => {
+											setBatchJobs([]);
+											setActiveBatchJobId(null);
+										}}
+										className="action-pill ghost-pill compact-pill"
+										disabled={isBatchRunning}
+									>
+										{m.batch_clear()}
+									</button>
+								</div>
+							</div>
+							<div className="batch-list">
+								{batchJobs.map((job) => {
+									const isActive = activeBatchJobId === job.id;
+									const summary =
+										job.status === 'done'
+											? m.batch_stats({
+													words: job.wordCount,
+													lines: job.lineCount,
+													confidence: job.confidence ?? '--',
+												})
+											: job.error || m.batch_pending();
+
+									return (
+										<article
+											key={job.id}
+											className={`batch-card ${isActive ? 'is-active' : ''}`}
+										>
+											<div className="batch-card-strip">
+												<div className="batch-thumb-strip" aria-hidden="true">
+													{job.thumbnailDataUrl ? (
+														<img
+															src={job.thumbnailDataUrl}
+															alt={job.name}
+															className="batch-thumb-image"
+														/>
+													) : (
+														<div className="batch-thumb-fallback">
+															<ImagePlus size={18} />
+														</div>
+													)}
+												</div>
+												<div className="batch-card-body">
+													<div className="batch-head">
+														<strong>{job.name}</strong>
+														<span className={`batch-status is-${job.status}`}>
+															{getBatchStatusLabel(job.status)}
+														</span>
+													</div>
+													<div className="batch-meta">
+														<span>{getSourceLabel(job.source)}</span>
+														{job.snapshot ? (
+															<span>
+																{getDetectedLanguageLabel(
+																	job.snapshot.detectedLanguage,
+																)}
+															</span>
+														) : null}
+													</div>
+													<p className="batch-copy">{summary}</p>
+													<div className="batch-actions">
+														<button
+															type="button"
+															onClick={() => {
+																void handleOpenBatchJob(job.id);
+															}}
+															className="action-pill ghost-pill compact-pill"
+															disabled={isBusy || job.status === 'running'}
+														>
+															{m.batch_open()}
+														</button>
+													</div>
+												</div>
+											</div>
+										</article>
+									);
+								})}
+							</div>
+						</section>
+					) : null}
+				</div>
 			</div>
+			<VideoStudio
+				hidden={activeMode !== 'video'}
+				processing={processing}
+				compatibilityMessage={compatibilityMessage}
+				hasCompatibilityIssue={hasCompatibilityIssue}
+				isImageBusy={isRunning || isBatchRunning}
+				isVideoRunning={isVideoRunning}
+				setIsVideoRunning={setIsVideoRunning}
+			/>
 		</main>
 	);
 }
