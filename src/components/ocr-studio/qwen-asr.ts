@@ -47,6 +47,8 @@ type ModelFile = {
 	size: number;
 };
 
+type ModelAsset = Uint8Array | Blob;
+
 type MelSpectrogram = {
 	data: Float32Array;
 	frames: number;
@@ -66,6 +68,9 @@ const HIDDEN_SIZE = 2048;
 const EOS_TOKEN_IDS = new Set([151_643, 151_645]);
 const AUDIO_PAD_TOKEN_ID = 151_676;
 const NEWLINE_TOKEN_ID = 198;
+const RANGED_DOWNLOAD_THRESHOLD_BYTES = 64 * 1024 * 1024;
+const RANGE_CHUNK_BYTES = 32 * 1024 * 1024;
+const RANGE_DOWNLOAD_ATTEMPTS = 4;
 
 const MODEL_FILES: ModelFile[] = [
 	{ name: 'config.json', size: 1_000 },
@@ -97,6 +102,14 @@ function getModelFileRequest(fileName: string) {
 	return new Request(getModelFileUrl(fileName));
 }
 
+function getModelChunkRequest(fileName: string, start: number, end: number) {
+	const chunkKey = `${encodeURIComponent(fileName)}-${start}-${end}`;
+
+	return new Request(
+		`${globalThis.location.origin}/__da_ocr_qwen_asr_chunk__/${chunkKey}`,
+	);
+}
+
 function emitTotalProgress(
 	loadedBytes: number,
 	progress?: QwenAsrProgressCallback,
@@ -118,13 +131,24 @@ async function getQwenCache() {
 	return caches.open(QWEN_ASR_CACHE_KEY);
 }
 
-async function readCachedModelData(fileName: string) {
+async function readCachedModelAsset(
+	file: ModelFile,
+): Promise<ModelAsset | null> {
 	const cache = await getQwenCache();
-	const cachedResponse = await cache.match(getModelFileRequest(fileName));
+	const cachedResponse = await cache.match(getModelFileRequest(file.name));
 
-	return cachedResponse
-		? new Uint8Array(await cachedResponse.arrayBuffer())
-		: null;
+	if (!cachedResponse) {
+		return null;
+	}
+
+	if (
+		file.name.endsWith('.data') &&
+		file.size >= RANGED_DOWNLOAD_THRESHOLD_BYTES
+	) {
+		return cachedResponse.blob();
+	}
+
+	return new Uint8Array(await cachedResponse.arrayBuffer());
 }
 
 function concatenateChunks(chunks: Uint8Array[], byteLength: number) {
@@ -139,17 +163,248 @@ function concatenateChunks(chunks: Uint8Array[], byteLength: number) {
 	return output;
 }
 
+function getChunkRanges(file: ModelFile) {
+	const ranges: Array<{ start: number; end: number; size: number }> = [];
+
+	for (let start = 0; start < file.size; start += RANGE_CHUNK_BYTES) {
+		const end = Math.min(file.size - 1, start + RANGE_CHUNK_BYTES - 1);
+
+		ranges.push({
+			start,
+			end,
+			size: end - start + 1,
+		});
+	}
+
+	return ranges;
+}
+
+async function sleep(ms: number) {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readCachedChunkBlob(
+	fileName: string,
+	start: number,
+	end: number,
+) {
+	const cache = await getQwenCache();
+	const cachedResponse = await cache.match(
+		getModelChunkRequest(fileName, start, end),
+	);
+
+	return cachedResponse ? cachedResponse.blob() : null;
+}
+
+async function isChunkCached(fileName: string, start: number, end: number) {
+	const cachedBlob = await readCachedChunkBlob(fileName, start, end);
+
+	return cachedBlob?.size === end - start + 1;
+}
+
+async function readCachedChunkData(
+	fileName: string,
+	start: number,
+	end: number,
+) {
+	const cachedBlob = await readCachedChunkBlob(fileName, start, end);
+
+	if (!cachedBlob || cachedBlob.size !== end - start + 1) {
+		return null;
+	}
+
+	return new Uint8Array(await cachedBlob.arrayBuffer());
+}
+
+async function fetchRangeChunk(
+	file: ModelFile,
+	start: number,
+	end: number,
+	onProgress: (loadedBytes: number) => void,
+) {
+	const expectedBytes = end - start + 1;
+	let lastCause: unknown;
+
+	for (let attempt = 1; attempt <= RANGE_DOWNLOAD_ATTEMPTS; attempt += 1) {
+		try {
+			const response = await fetch(getModelFileUrl(file.name), {
+				headers: {
+					Range: `bytes=${start}-${end}`,
+				},
+			});
+
+			if (response.status !== 206) {
+				throw new Error(
+					`Expected HTTP 206 for ${file.name} bytes ${start}-${end}, got ${response.status}.`,
+				);
+			}
+
+			const chunks: Uint8Array[] = [];
+			let loaded = 0;
+
+			if (response.body) {
+				const reader = response.body.getReader();
+
+				while (true) {
+					const { done, value } = await reader.read();
+
+					if (done) {
+						break;
+					}
+
+					if (value) {
+						chunks.push(value.slice());
+						loaded += value.byteLength;
+						onProgress(loaded);
+					}
+				}
+			} else {
+				const data = new Uint8Array(await response.arrayBuffer());
+				chunks.push(data);
+				loaded = data.byteLength;
+				onProgress(loaded);
+			}
+
+			if (loaded !== expectedBytes) {
+				throw new Error(
+					`Downloaded ${loaded} bytes for ${file.name} range ${start}-${end}, expected ${expectedBytes}.`,
+				);
+			}
+
+			const chunkData = concatenateChunks(chunks, loaded);
+			const cache = await getQwenCache();
+			await cache.put(
+				getModelChunkRequest(file.name, start, end),
+				new Response(chunkData.slice(), {
+					headers: {
+						'content-type': 'application/octet-stream',
+						'x-da-ocr-model-file': file.name,
+						'x-da-ocr-range-start': String(start),
+						'x-da-ocr-range-end': String(end),
+					},
+				}),
+			);
+			return;
+		} catch (cause) {
+			lastCause = cause;
+
+			if (attempt < RANGE_DOWNLOAD_ATTEMPTS) {
+				await sleep(500 * 2 ** (attempt - 1));
+			}
+		}
+	}
+
+	throw new Error(
+		`Failed while downloading ${file.name} bytes ${start}-${end} from Hugging Face after ${RANGE_DOWNLOAD_ATTEMPTS} attempts.`,
+		{ cause: lastCause },
+	);
+}
+
+async function getChunkedBlob(file: ModelFile) {
+	const parts: Blob[] = [];
+
+	for (const range of getChunkRanges(file)) {
+		const cachedBlob = await readCachedChunkBlob(
+			file.name,
+			range.start,
+			range.end,
+		);
+
+		if (!cachedBlob || cachedBlob.size !== range.size) {
+			throw new Error(
+				`Cached chunk missing for ${file.name} bytes ${range.start}-${range.end}.`,
+			);
+		}
+
+		parts.push(cachedBlob);
+	}
+
+	return new Blob(parts, { type: 'application/octet-stream' });
+}
+
+async function getChunkedData(file: ModelFile) {
+	const chunks: Uint8Array[] = [];
+
+	for (const range of getChunkRanges(file)) {
+		const cachedData = await readCachedChunkData(
+			file.name,
+			range.start,
+			range.end,
+		);
+
+		if (!cachedData) {
+			throw new Error(
+				`Cached chunk missing for ${file.name} bytes ${range.start}-${range.end}.`,
+			);
+		}
+
+		chunks.push(cachedData);
+	}
+
+	return concatenateChunks(chunks, file.size);
+}
+
+async function downloadRangedModelAsset(
+	file: ModelFile,
+	loadedBeforeFile: number,
+	progress?: QwenAsrProgressCallback,
+): Promise<ModelAsset> {
+	progress?.({ status: 'initiate', file: file.name, progress: 0 });
+	progress?.({ status: 'download', file: file.name, progress: 0 });
+
+	let completedBytes = 0;
+
+	for (const range of getChunkRanges(file)) {
+		if (await isChunkCached(file.name, range.start, range.end)) {
+			completedBytes += range.size;
+			progress?.({
+				status: 'progress',
+				file: file.name,
+				progress: (completedBytes / file.size) * 100,
+			});
+			emitTotalProgress(loadedBeforeFile + completedBytes, progress);
+			continue;
+		}
+
+		await fetchRangeChunk(file, range.start, range.end, (chunkLoadedBytes) => {
+			const fileLoadedBytes = completedBytes + chunkLoadedBytes;
+
+			progress?.({
+				status: 'progress',
+				file: file.name,
+				progress: (fileLoadedBytes / file.size) * 100,
+			});
+			emitTotalProgress(loadedBeforeFile + fileLoadedBytes, progress);
+		});
+
+		completedBytes += range.size;
+	}
+
+	progress?.({ status: 'done', file: file.name, progress: 100 });
+	emitTotalProgress(loadedBeforeFile + file.size, progress);
+
+	if (file.name.endsWith('.data')) {
+		return getChunkedBlob(file);
+	}
+
+	return getChunkedData(file);
+}
+
 async function downloadModelData(
 	file: ModelFile,
 	loadedBeforeFile: number,
 	progress?: QwenAsrProgressCallback,
-) {
-	const cachedData = await readCachedModelData(file.name);
+): Promise<ModelAsset> {
+	const cachedData = await readCachedModelAsset(file);
 
 	if (cachedData) {
 		progress?.({ status: 'done', file: file.name, progress: 100 });
 		emitTotalProgress(loadedBeforeFile + file.size, progress);
 		return cachedData;
+	}
+
+	if (file.size >= RANGED_DOWNLOAD_THRESHOLD_BYTES) {
+		return downloadRangedModelAsset(file, loadedBeforeFile, progress);
 	}
 
 	progress?.({ status: 'initiate', file: file.name, progress: 0 });
@@ -230,8 +485,10 @@ async function downloadModelData(
 	return modelData;
 }
 
-async function getModelData(progress?: QwenAsrProgressCallback) {
-	const entries: [string, Uint8Array][] = [];
+async function getModelData(
+	progress?: QwenAsrProgressCallback,
+): Promise<Record<string, ModelAsset>> {
+	const entries: [string, ModelAsset][] = [];
 	let loadedBeforeFile = 0;
 
 	for (const file of MODEL_FILES) {
@@ -241,6 +498,32 @@ async function getModelData(progress?: QwenAsrProgressCallback) {
 	}
 
 	return Object.fromEntries(entries);
+}
+
+function getModelAsset(
+	modelData: Record<string, ModelAsset>,
+	fileName: string,
+) {
+	const asset = modelData[fileName];
+
+	if (!asset) {
+		throw new Error(`${fileName} was not loaded.`);
+	}
+
+	return asset;
+}
+
+function getModelBytes(
+	modelData: Record<string, ModelAsset>,
+	fileName: string,
+) {
+	const asset = getModelAsset(modelData, fileName);
+
+	if (asset instanceof Uint8Array) {
+		return asset;
+	}
+
+	throw new Error(`${fileName} was not loaded as bytes.`);
 }
 
 async function getOrt() {
@@ -291,7 +574,10 @@ async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
 		getOrt(),
 		getModelData(progress),
 	]);
-	const tokenizer = createQwenTokenizer(modelData['tokenizer.json']);
+	const tokenizer = createQwenTokenizer(
+		getModelBytes(modelData, 'tokenizer.json'),
+	);
+	const decoderWeights = getModelAsset(modelData, 'decoder_weights.int4.data');
 	const sessionOptions = {
 		executionProviders: ['webgpu', 'wasm'],
 		graphOptimizationLevel: 'all',
@@ -301,27 +587,27 @@ async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
 		externalData: [
 			{
 				path: 'decoder_weights.int4.data',
-				data: modelData['decoder_weights.int4.data'],
+				data: decoderWeights,
 			},
 		],
 	} satisfies import('onnxruntime-web').InferenceSession.SessionOptions;
 
 	const encoder = await createSessionFromData(
 		ort,
-		modelData['encoder.int4.onnx'],
+		getModelBytes(modelData, 'encoder.int4.onnx'),
 		sessionOptions,
 	);
 	const decoderInit = await createSessionFromData(
 		ort,
-		modelData['decoder_init.int4.onnx'],
+		getModelBytes(modelData, 'decoder_init.int4.onnx'),
 		decoderSessionOptions,
 	);
 	const decoderStep = await createSessionFromData(
 		ort,
-		modelData['decoder_step.int4.onnx'],
+		getModelBytes(modelData, 'decoder_step.int4.onnx'),
 		decoderSessionOptions,
 	);
-	const embedTokenData = modelData['embed_tokens.bin'];
+	const embedTokenData = getModelBytes(modelData, 'embed_tokens.bin');
 	const embedTokens = new Uint16Array(
 		embedTokenData.buffer,
 		embedTokenData.byteOffset,
@@ -376,6 +662,23 @@ export async function getQwenAsrCacheSummary(): Promise<CacheSummary> {
 			if (cachedResponse) {
 				filesCached += 1;
 				bytesCached += file.size;
+				continue;
+			}
+
+			if (file.size >= RANGED_DOWNLOAD_THRESHOLD_BYTES) {
+				let chunkedBytes = 0;
+
+				for (const range of getChunkRanges(file)) {
+					if (await isChunkCached(file.name, range.start, range.end)) {
+						chunkedBytes += range.size;
+					}
+				}
+
+				bytesCached += chunkedBytes;
+
+				if (chunkedBytes === file.size) {
+					filesCached += 1;
+				}
 			}
 		}
 
