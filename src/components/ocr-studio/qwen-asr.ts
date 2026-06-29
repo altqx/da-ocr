@@ -292,19 +292,21 @@ async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
 		],
 	} satisfies import('onnxruntime-web').InferenceSession.SessionOptions;
 
-	const [encoder, decoderInit, decoderStep] = await Promise.all([
-		createSessionFromBlob(ort, modelBlobs['encoder.int4.onnx'], sessionOptions),
-		createSessionFromBlob(
-			ort,
-			modelBlobs['decoder_init.int4.onnx'],
-			decoderSessionOptions,
-		),
-		createSessionFromBlob(
-			ort,
-			modelBlobs['decoder_step.int4.onnx'],
-			decoderSessionOptions,
-		),
-	]);
+	const encoder = await createSessionFromBlob(
+		ort,
+		modelBlobs['encoder.int4.onnx'],
+		sessionOptions,
+	);
+	const decoderInit = await createSessionFromBlob(
+		ort,
+		modelBlobs['decoder_init.int4.onnx'],
+		decoderSessionOptions,
+	);
+	const decoderStep = await createSessionFromBlob(
+		ort,
+		modelBlobs['decoder_step.int4.onnx'],
+		decoderSessionOptions,
+	);
 	const embedTokens = new Uint16Array(
 		await modelBlobs['embed_tokens.bin'].arrayBuffer(),
 	);
