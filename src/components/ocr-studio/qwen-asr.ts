@@ -71,6 +71,10 @@ const NEWLINE_TOKEN_ID = 198;
 const RANGED_DOWNLOAD_THRESHOLD_BYTES = 64 * 1024 * 1024;
 const RANGE_CHUNK_BYTES = 32 * 1024 * 1024;
 const RANGE_DOWNLOAD_ATTEMPTS = 4;
+const WEBGPU_SESSION_CREATE_BUSY_TEXT =
+	'another WebGPU EP inference session is being created';
+const WEBGPU_SESSION_CREATE_RETRY_DELAYS_MS = [750, 1500, 3000];
+const WEBGPU_SESSION_CREATE_SETTLE_DELAY_MS = 500;
 
 const MODEL_FILES: ModelFile[] = [
 	{ name: 'config.json', size: 1_000 },
@@ -93,6 +97,7 @@ const DFT_TABLE = makeDftTable();
 
 let runnerPromise: Promise<QwenAsrRunner> | null = null;
 let ortModulePromise: Promise<OrtModule> | null = null;
+let sessionCreationQueue: Promise<void> = Promise.resolve();
 
 function getModelFileUrl(fileName: string) {
 	return `https://huggingface.co/${QWEN_ASR_MODEL_ID}/resolve/main/${fileName}`;
@@ -181,6 +186,52 @@ function getChunkRanges(file: ModelFile) {
 
 async function sleep(ms: number) {
 	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessages(cause: unknown) {
+	const messages: string[] = [];
+	const seen = new Set<unknown>();
+	let current = cause;
+
+	while (current && typeof current === 'object' && !seen.has(current)) {
+		seen.add(current);
+
+		if (current instanceof Error && current.message) {
+			messages.push(current.message);
+		}
+
+		current =
+			'cause' in current ? (current as { cause?: unknown }).cause : undefined;
+	}
+
+	if (typeof cause === 'string') {
+		messages.push(cause);
+	}
+
+	return messages;
+}
+
+function isWebGpuSessionCreationBusyError(cause: unknown) {
+	return getErrorMessages(cause).some((message) =>
+		message.includes(WEBGPU_SESSION_CREATE_BUSY_TEXT),
+	);
+}
+
+async function runWithSessionCreationLock<T>(task: () => Promise<T>) {
+	const previous = sessionCreationQueue;
+	let releaseLock: () => void = () => {};
+
+	sessionCreationQueue = new Promise<void>((resolve) => {
+		releaseLock = resolve;
+	});
+
+	await previous.catch(() => undefined);
+
+	try {
+		return await task();
+	} finally {
+		releaseLock();
+	}
 }
 
 async function readCachedChunkBlob(
@@ -557,16 +608,42 @@ async function getOrt() {
 async function createSessionFromData(
 	ort: OrtModule,
 	modelData: Uint8Array,
+	fileName: string,
 	options?: import('onnxruntime-web').InferenceSession.SessionOptions,
 ) {
-	try {
-		return await ort.InferenceSession.create(modelData, options);
-	} catch (cause) {
+	return runWithSessionCreationLock(async () => {
+		let lastCause: unknown;
+
+		for (
+			let attempt = 0;
+			attempt <= WEBGPU_SESSION_CREATE_RETRY_DELAYS_MS.length;
+			attempt += 1
+		) {
+			try {
+				const session = await ort.InferenceSession.create(modelData, options);
+				await sleep(WEBGPU_SESSION_CREATE_SETTLE_DELAY_MS);
+				return session;
+			} catch (cause) {
+				lastCause = cause;
+
+				const retryDelay = WEBGPU_SESSION_CREATE_RETRY_DELAYS_MS[attempt];
+
+				if (
+					retryDelay === undefined ||
+					!isWebGpuSessionCreationBusyError(cause)
+				) {
+					break;
+				}
+
+				await sleep(retryDelay);
+			}
+		}
+
 		throw new Error(
-			'Failed to create an ONNX Runtime WebGPU inference session. The browser could not initialize the local runtime for this model file.',
-			{ cause },
+			`Failed to create an ONNX Runtime WebGPU inference session for ${fileName}. The browser could not initialize the local runtime for this model file.`,
+			{ cause: lastCause },
 		);
-	}
+	});
 }
 
 async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
@@ -591,54 +668,81 @@ async function createQwenAsrRunner(progress?: QwenAsrProgressCallback) {
 			},
 		],
 	} satisfies import('onnxruntime-web').InferenceSession.SessionOptions;
+	const createdSessions: OrtSession[] = [];
 
-	const encoder = await createSessionFromData(
-		ort,
-		getModelBytes(modelData, 'encoder.int4.onnx'),
-		sessionOptions,
-	);
-	const decoderInit = await createSessionFromData(
-		ort,
-		getModelBytes(modelData, 'decoder_init.int4.onnx'),
-		decoderSessionOptions,
-	);
-	const decoderStep = await createSessionFromData(
-		ort,
-		getModelBytes(modelData, 'decoder_step.int4.onnx'),
-		decoderSessionOptions,
-	);
-	const embedTokenData = getModelBytes(modelData, 'embed_tokens.bin');
-	const embedTokens = new Uint16Array(
-		embedTokenData.buffer,
-		embedTokenData.byteOffset,
-		embedTokenData.byteLength / Uint16Array.BYTES_PER_ELEMENT,
-	);
+	try {
+		const encoder = await createSessionFromData(
+			ort,
+			getModelBytes(modelData, 'encoder.int4.onnx'),
+			'encoder.int4.onnx',
+			sessionOptions,
+		);
+		createdSessions.push(encoder);
+		const decoderInit = await createSessionFromData(
+			ort,
+			getModelBytes(modelData, 'decoder_init.int4.onnx'),
+			'decoder_init.int4.onnx',
+			decoderSessionOptions,
+		);
+		createdSessions.push(decoderInit);
+		const decoderStep = await createSessionFromData(
+			ort,
+			getModelBytes(modelData, 'decoder_step.int4.onnx'),
+			'decoder_step.int4.onnx',
+			decoderSessionOptions,
+		);
+		createdSessions.push(decoderStep);
+		const embedTokenData = getModelBytes(modelData, 'embed_tokens.bin');
+		const embedTokens = new Uint16Array(
+			embedTokenData.buffer,
+			embedTokenData.byteOffset,
+			embedTokenData.byteLength / Uint16Array.BYTES_PER_ELEMENT,
+		);
 
-	progress?.({ status: 'ready' });
+		progress?.({ status: 'ready' });
 
-	return new QwenAsrRunner(
-		ort,
-		encoder,
-		decoderInit,
-		decoderStep,
-		embedTokens,
-		tokenizer,
-	);
+		return new QwenAsrRunner(
+			ort,
+			encoder,
+			decoderInit,
+			decoderStep,
+			embedTokens,
+			tokenizer,
+		);
+	} catch (cause) {
+		await Promise.allSettled(
+			createdSessions.map((session) => session.release()),
+		);
+		throw cause;
+	}
 }
 
 export async function loadQwenAsrPipeline(progress?: QwenAsrProgressCallback) {
 	if (!runnerPromise) {
-		runnerPromise = createQwenAsrRunner(progress).catch((cause) => {
-			runnerPromise = null;
+		const nextRunnerPromise = createQwenAsrRunner(progress).catch((cause) => {
+			if (runnerPromise === nextRunnerPromise) {
+				runnerPromise = null;
+			}
+
 			throw cause;
 		});
+
+		runnerPromise = nextRunnerPromise;
 	}
 
 	return runnerPromise;
 }
 
-export function resetQwenAsrPipeline() {
+export async function resetQwenAsrPipeline() {
+	const activeRunnerPromise = runnerPromise;
+
 	runnerPromise = null;
+
+	if (activeRunnerPromise) {
+		await activeRunnerPromise
+			.then((runner) => runner.release())
+			.catch(() => undefined);
+	}
 }
 
 export async function transcribeWithQwenAsr(
@@ -727,7 +831,7 @@ async function clearCacheEntries(cacheName: string, modelId: string) {
 }
 
 export async function clearQwenAsrCache() {
-	resetQwenAsrPipeline();
+	await resetQwenAsrPipeline();
 
 	if (typeof caches === 'undefined') {
 		return {
@@ -760,6 +864,8 @@ export async function clearQwenAsrCache() {
 }
 
 class QwenAsrRunner {
+	private releasePromise: Promise<void> | null = null;
+
 	constructor(
 		private readonly ort: OrtModule,
 		private readonly encoder: OrtSession,
@@ -768,6 +874,18 @@ class QwenAsrRunner {
 		private readonly embedTokens: Uint16Array,
 		private readonly tokenizer: QwenTokenizer,
 	) {}
+
+	async release() {
+		if (!this.releasePromise) {
+			this.releasePromise = Promise.allSettled([
+				this.encoder.release(),
+				this.decoderInit.release(),
+				this.decoderStep.release(),
+			]).then(() => undefined);
+		}
+
+		return this.releasePromise;
+	}
 
 	async transcribe(
 		samples: Float32Array,
