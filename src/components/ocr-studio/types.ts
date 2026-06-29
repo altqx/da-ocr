@@ -8,7 +8,7 @@ export type ImageAsset = {
 	source: 'paste' | 'picker' | 'drop';
 };
 
-export type StudioMode = 'image' | 'video';
+export type StudioMode = 'image' | 'video' | 'audio';
 
 export type VideoAsset = {
 	name: string;
@@ -18,6 +18,18 @@ export type VideoAsset = {
 	width: number;
 	height: number;
 	duration: number;
+};
+
+export type AudioAsset = {
+	name: string;
+	size: number;
+	type: string;
+	url: string;
+	duration: number;
+	sourceKind: 'audio' | 'video';
+	originalName: string;
+	originalSize: number;
+	originalType: string;
 };
 
 export type CropSelection = {
@@ -122,6 +134,15 @@ export type VideoTimelineCue = {
 	text: string;
 	frameIndexes: number[];
 };
+
+export type SubtitleCue = {
+	id: string;
+	start: number;
+	end: number;
+	text: string;
+};
+
+export type AudioTimelineCue = SubtitleCue;
 
 export type OcrExecutionResult =
 	| {

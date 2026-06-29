@@ -1,10 +1,11 @@
-import { Film, ImagePlus } from 'lucide-react';
+import { Film, ImagePlus, Mic } from 'lucide-react';
 import { m } from '../../i18n';
 import type { StudioMode } from './types';
 
 type ModeTabsProps = {
 	activeMode: StudioMode;
 	isImageBusy: boolean;
+	isAudioRunning: boolean;
 	isVideoRunning: boolean;
 	onModeChange: (mode: StudioMode) => void;
 };
@@ -12,6 +13,7 @@ type ModeTabsProps = {
 export default function ModeTabs({
 	activeMode,
 	isImageBusy,
+	isAudioRunning,
 	isVideoRunning,
 	onModeChange,
 }: ModeTabsProps) {
@@ -25,7 +27,7 @@ export default function ModeTabs({
 					onModeChange('image');
 				}}
 				className={`mode-tab ${activeMode === 'image' ? 'is-active' : ''}`}
-				disabled={isVideoRunning}
+				disabled={isVideoRunning || isAudioRunning}
 			>
 				<ImagePlus size={16} />
 				{m.mode_image()}
@@ -38,10 +40,23 @@ export default function ModeTabs({
 					onModeChange('video');
 				}}
 				className={`mode-tab ${activeMode === 'video' ? 'is-active' : ''}`}
-				disabled={isImageBusy}
+				disabled={isImageBusy || isAudioRunning}
 			>
 				<Film size={16} />
 				{m.mode_video()}
+			</button>
+			<button
+				type="button"
+				role="tab"
+				aria-selected={activeMode === 'audio'}
+				onClick={() => {
+					onModeChange('audio');
+				}}
+				className={`mode-tab ${activeMode === 'audio' ? 'is-active' : ''}`}
+				disabled={isImageBusy || isVideoRunning}
+			>
+				<Mic size={16} />
+				{m.mode_audio()}
 			</button>
 		</div>
 	);

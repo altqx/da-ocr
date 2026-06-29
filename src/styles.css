@@ -249,6 +249,14 @@ pre code {
   overflow: hidden;
 }
 
+.audio-workspace {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(22rem, 0.85fr) minmax(0, 1.15fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ═══════════════════════════════════════════
    PANELS
    ═══════════════════════════════════════════ */
@@ -1126,6 +1134,56 @@ pre code {
   font-size: 0.65rem;
 }
 
+.audio-preview {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100%;
+}
+
+.audio-preview-body {
+  display: grid;
+  gap: 1rem;
+  place-items: center;
+  width: 100%;
+  min-height: 17rem;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.audio-preview-body strong {
+  max-width: min(100%, 32rem);
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.audio-preview-body audio {
+  width: min(100%, 34rem);
+}
+
+.audio-model-readout {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+  font-family: var(--font-mono);
+}
+
+.audio-model-readout span {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.audio-model-readout strong {
+  color: var(--ink);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
 /* ═══════════════════════════════════════════
    OUTPUT
    ═══════════════════════════════════════════ */
@@ -1964,6 +2022,10 @@ a {
   }
 
   .video-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .audio-workspace {
     grid-template-columns: 1fr;
   }
 

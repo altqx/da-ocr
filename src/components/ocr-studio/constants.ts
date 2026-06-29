@@ -18,6 +18,9 @@ export const MIN_VIDEO_FRAME_INTERVAL = 0.5;
 export const MAX_VIDEO_FRAME_INTERVAL = 5;
 export const MAX_VIDEO_FRAMES = 120;
 export const VIDEO_FRAME_MAX_EDGE = 1600;
+export const QWEN_ASR_MODEL_ID = 'Qwen/Qwen3-ASR-1.7B-hf';
+export const QWEN_ASR_MODEL_LABEL = 'Qwen3-ASR-1.7B-hf';
+export const TRANSFORMERS_CACHE_KEY = 'transformers-cache';
 
 export const DEFAULT_PREVIEW_TRANSFORM: PreviewTransform = {
 	scale: 1,

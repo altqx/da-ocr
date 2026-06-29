@@ -28,6 +28,7 @@ import {
 } from 'react';
 import { m } from '../i18n';
 import { runLensOcr } from '../lib/lens-ocr';
+import AudioTranscriptionStudio from './ocr-studio/AudioTranscriptionStudio';
 import {
 	DEFAULT_PREVIEW_TRANSFORM,
 	DEFAULT_PROCESSING,
@@ -168,6 +169,7 @@ export default function OcrStudio() {
 	const [isBatchRunning, setIsBatchRunning] = useState(false);
 	const [hasHydratedBatchQueue, setHasHydratedBatchQueue] = useState(false);
 	const [isVideoRunning, setIsVideoRunning] = useState(false);
+	const [isAudioRunning, setIsAudioRunning] = useState(false);
 	const [compatibilityIssues, setCompatibilityIssues] = useState<
 		CompatibilityFeature[]
 	>([]);
@@ -177,7 +179,8 @@ export default function OcrStudio() {
 	const deferredCrop = useDeferredValue(activeCrop);
 	const initialStatus = m.status_initial();
 	const currentSignature = getRunSignature(processing, activeCrop);
-	const isBusy = isRunning || isBatchRunning || isVideoRunning;
+	const isBusy =
+		isRunning || isBatchRunning || isVideoRunning || isAudioRunning;
 	const compatibilityMessage = compatibilityIssues.length
 		? m.compatibility_error({
 				features: compatibilityIssues
@@ -1650,6 +1653,7 @@ export default function OcrStudio() {
 			<ModeTabs
 				activeMode={activeMode}
 				isImageBusy={isRunning || isBatchRunning}
+				isAudioRunning={isAudioRunning}
 				isVideoRunning={isVideoRunning}
 				onModeChange={setActiveMode}
 			/>
@@ -2455,6 +2459,13 @@ export default function OcrStudio() {
 				isImageBusy={isRunning || isBatchRunning}
 				isVideoRunning={isVideoRunning}
 				setIsVideoRunning={setIsVideoRunning}
+			/>
+			<AudioTranscriptionStudio
+				hidden={activeMode !== 'audio'}
+				isImageBusy={isRunning || isBatchRunning}
+				isVideoRunning={isVideoRunning}
+				isAudioRunning={isAudioRunning}
+				setIsAudioRunning={setIsAudioRunning}
 			/>
 		</main>
 	);

@@ -2,6 +2,7 @@ import { m } from '../../i18n';
 import { MAX_VIDEO_FRAMES, VIDEO_FRAME_MAX_EDGE } from './constants';
 import type {
 	CropSelection,
+	SubtitleCue,
 	VideoAsset,
 	VideoFrameResult,
 	VideoFrameStatus,
@@ -137,7 +138,7 @@ export function getVideoTimelineCues(
 	return cues.filter((cue) => cue.text);
 }
 
-export function getSubtitleFile(cues: VideoTimelineCue[]) {
+export function getSubtitleFile(cues: SubtitleCue[]) {
 	return cues
 		.map(
 			(cue, index) =>
@@ -148,7 +149,7 @@ export function getSubtitleFile(cues: VideoTimelineCue[]) {
 		.join('\n\n');
 }
 
-export function getWebVttFile(cues: VideoTimelineCue[]) {
+export function getWebVttFile(cues: SubtitleCue[]) {
 	return [
 		'WEBVTT',
 		'',
