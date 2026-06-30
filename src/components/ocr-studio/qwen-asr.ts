@@ -1,4 +1,10 @@
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
+import {
+	ASR_CHUNK_SECONDS,
+	ASR_SAMPLE_RATE,
+	cleanAsrTranscript,
+	getTranscriptionAudioChunks,
+} from './audio-transcription-quality';
 import type { AudioTranscriptionResult } from './audio-utils';
 import {
 	QWEN_ASR_CACHE_KEY,
@@ -54,9 +60,8 @@ type MelSpectrogram = {
 	frames: number;
 };
 
-const SAMPLE_RATE = 16_000;
-const CHUNK_SECONDS = 30;
-const CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_SECONDS;
+const SAMPLE_RATE = ASR_SAMPLE_RATE;
+const CHUNK_SECONDS = ASR_CHUNK_SECONDS;
 const N_FFT = 400;
 const HOP_LENGTH = 160;
 const N_MELS = 128;
@@ -907,27 +912,32 @@ class QwenAsrRunner {
 		samples: Float32Array,
 		progress?: QwenAsrProgressCallback,
 	): Promise<AudioTranscriptionResult> {
-		const totalChunks = Math.max(1, Math.ceil(samples.length / CHUNK_SAMPLES));
+		const audioChunks = getTranscriptionAudioChunks(samples, {
+			maxChunkSeconds: CHUNK_SECONDS,
+			sampleRate: SAMPLE_RATE,
+		});
+		const totalChunks = audioChunks.length;
 		const chunks: NonNullable<AudioTranscriptionResult['chunks']> = [];
 
 		for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+			const audioChunk = audioChunks[chunkIndex];
+
+			if (!audioChunk) {
+				continue;
+			}
+
 			progress?.({
 				status: 'chunk',
 				chunk: chunkIndex + 1,
 				total: totalChunks,
 			});
 
-			const startSample = chunkIndex * CHUNK_SAMPLES;
-			const endSample = Math.min(samples.length, startSample + CHUNK_SAMPLES);
-			const chunkSamples = samples.slice(startSample, endSample);
-			const text = await this.transcribeChunk(chunkSamples);
-			const start = startSample / SAMPLE_RATE;
-			const end = Math.max(start + 0.1, endSample / SAMPLE_RATE);
+			const text = await this.transcribeChunk(audioChunk.samples);
 
 			if (text.trim()) {
 				chunks.push({
 					text,
-					timestamp: [start, end],
+					timestamp: [audioChunk.start, audioChunk.end],
 				});
 			}
 
@@ -965,11 +975,11 @@ class QwenAsrRunner {
 
 		const promptIds = buildPromptIds(audioTokenCount);
 		const outputTokens = await this.greedyDecode(audioFeatures, promptIds);
-		const text = this.tokenizer.decode(outputTokens);
+		const text = cleanAsrTranscript(this.tokenizer.decode(outputTokens));
 
 		disposeTensor(audioFeatures);
 		disposeTensor(melTensor);
-		return text.trim();
+		return text;
 	}
 
 	private async greedyDecode(audioFeatures: OrtTensor, promptIds: number[]) {
